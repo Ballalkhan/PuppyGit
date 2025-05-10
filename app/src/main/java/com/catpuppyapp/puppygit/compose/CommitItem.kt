@@ -11,6 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.catpuppyapp.puppygit.git.CommitDto
 import com.catpuppyapp.puppygit.play.pro.R
+import com.catpuppyapp.puppygit.style.MyStyleKt
 import com.catpuppyapp.puppygit.utils.Libgit2Helper
 import com.catpuppyapp.puppygit.utils.Msg
 import com.catpuppyapp.puppygit.utils.UIHelper
@@ -62,6 +64,9 @@ fun CommitItem(
         curCommitIdx.intValue = idx
     }
 
+    val defaultFontWeight = remember { MyStyleKt.TextItem.defaultFontWeight() }
+    
+
 //    println("IDX::::::::::"+idx)
     Column(
         //0.9f 占父元素宽度的百分之90
@@ -74,7 +79,7 @@ fun CommitItem(
                     lastClickedItemKey.value = commitDto.oidStr
                     onClick(commitDto)
                 },
-                onLongClick = {  // x 算了)TODO 把长按也改成短按那样，在调用者那里实现，这里只负责把dto传过去，不过好像没必要，因为调用者那里还是要写同样的代码，不然弹窗不知道操作的是哪个对象
+                onLongClick = {  // x 算了)xTODO 把长按也改成短按那样，在调用者那里实现，这里只负责把dto传过去，不过好像没必要，因为调用者那里还是要写同样的代码，不然弹窗不知道操作的是哪个对象
                     lastClickedItemKey.value = commitDto.oidStr
 
                     //震动反馈
@@ -120,7 +125,7 @@ fun CommitItem(
             Text(text = commitDto.shortOidStr,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Light
+                fontWeight = defaultFontWeight
 
             )
 
@@ -138,7 +143,7 @@ fun CommitItem(
 //            Text(text = commitDto.email,
 //                maxLines = 1,
 //                overflow = TextOverflow.Ellipsis,
-//                fontWeight = FontWeight.Light
+//                fontWeight = defaultFontWeight
 //
 //            )
 //        }
@@ -150,7 +155,7 @@ fun CommitItem(
             Text(text = Libgit2Helper.getFormattedUsernameAndEmail(commitDto.author, commitDto.email),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Light
+                fontWeight = defaultFontWeight
 
             )
         }
@@ -164,7 +169,7 @@ fun CommitItem(
                 Text(text = Libgit2Helper.getFormattedUsernameAndEmail(commitDto.committerUsername, commitDto.committerEmail),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.Light
+                    fontWeight = defaultFontWeight
 
                 )
             }
@@ -179,7 +184,7 @@ fun CommitItem(
             Text(text = if(shouldShowTimeZoneInfo) TimeZoneUtil.appendUtcTimeZoneText(commitDto.dateTime, commitDto.originTimeOffsetInMinutes) else commitDto.dateTime,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Light
+                fontWeight = defaultFontWeight
 
             )
         }
@@ -187,7 +192,7 @@ fun CommitItem(
             verticalAlignment = Alignment.CenterVertically,
         ){
             Text(text = stringResource(R.string.msg) +": ")
-            ClickableText(commitDto.msg) {
+            ClickableText(commitDto.getCachedOneLineMsg()) {
                 lastClickedItemKey.value = commitDto.oidStr
 
                 updateCurObjState()
@@ -201,10 +206,10 @@ fun CommitItem(
             ){
 
                 Text(text = (if(commitDto.branchShortNameList.size > 1) stringResource(R.string.branches) else stringResource(R.string.branch)) +": ")
-                Text(text = commitDto.branchShortNameList.toString(),
+                Text(text = commitDto.cachedBranchShortNameList(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.Light
+                    fontWeight = defaultFontWeight
 
                 )
             }
@@ -218,10 +223,10 @@ fun CommitItem(
             ){
 
                 Text(text = (if(commitDto.tagShortNameList.size > 1) stringResource(R.string.tags) else stringResource(R.string.tag)) +": ")
-                Text(text = commitDto.tagShortNameList.toString(),
+                Text(text = commitDto.cachedTagShortNameList(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.Light
+                    fontWeight = defaultFontWeight
 
                 )
             }
@@ -235,10 +240,10 @@ fun CommitItem(
             ){
 
                 Text(text = (if(commitDto.parentShortOidStrList.size > 1) stringResource(R.string.parents) else stringResource(R.string.parent)) +": ")
-                Text(text = commitDto.parentShortOidStrList.toString(),
+                Text(text = commitDto.cachedParentShortOidStrList(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.Light
+                    fontWeight = defaultFontWeight
 
                 )
             }
@@ -253,7 +258,7 @@ fun CommitItem(
                 Text(text = commitDto.getOther(activityContext, false),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.Light
+                    fontWeight = defaultFontWeight
                 )
             }
 

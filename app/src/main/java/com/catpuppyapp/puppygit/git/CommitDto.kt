@@ -4,6 +4,7 @@ import android.content.Context
 import com.catpuppyapp.puppygit.play.pro.R
 import com.catpuppyapp.puppygit.settings.AppSettings
 import com.catpuppyapp.puppygit.utils.AppModel
+import com.catpuppyapp.puppygit.utils.Libgit2Helper
 import com.catpuppyapp.puppygit.utils.formatMinutesToUtc
 import com.catpuppyapp.puppygit.utils.readTimeZoneOffsetInMinutesFromSettingsOrDefault
 
@@ -29,6 +30,13 @@ class CommitDto (
 
     private var otherMsg:String?=null
     private var otherMsgSearchableText:String?=null
+    private var cached_OneLineMsg:String? = null
+    private var cached_BranchShortNameList:String? = null
+    private var cached_TagShortNameList:String? = null
+    private var cached_ParentShortOidStrList:String? = null
+    private var cached_LineSeparated_BranchShortNameList:String? = null
+    private var cached_LineSeparated_TagShortNameList:String? = null
+    private var cached_LineSeparated_ParentFullOidStrList:String? = null
 
     fun hasOther():Boolean {
         return isGrafted || isMerged()
@@ -96,6 +104,15 @@ class CommitDto (
 
         return formatMinutesToUtc(minuteOffset)
     }
+
+    fun getCachedOneLineMsg(): String = (cached_OneLineMsg ?: Libgit2Helper.zipOneLineMsg(msg).let { cached_OneLineMsg = it; it });
+    fun cachedBranchShortNameList():String = cached_BranchShortNameList ?: branchShortNameList.joinToString { it }.let { cached_BranchShortNameList=it; it };
+    fun cachedTagShortNameList():String = cached_TagShortNameList ?: tagShortNameList.joinToString { it }.let { cached_TagShortNameList=it; it };
+    fun cachedParentShortOidStrList():String = cached_ParentShortOidStrList ?: parentShortOidStrList.joinToString { it }.let { cached_ParentShortOidStrList=it; it };
+
+    fun cachedLineSeparatedBranchList():String = cached_LineSeparated_BranchShortNameList ?: branchShortNameList.joinToString(separator = "\n", prefix = "\n") { it }.let { cached_LineSeparated_BranchShortNameList=it; it };
+    fun cachedLineSeparatedTagList():String = cached_LineSeparated_TagShortNameList ?: tagShortNameList.joinToString(separator = "\n", prefix = "\n") { it }.let { cached_LineSeparated_TagShortNameList=it; it };
+    fun cachedLineSeparatedParentFullOidList():String = cached_LineSeparated_ParentFullOidStrList ?: parentOidStrList.joinToString(separator = "\n", prefix = "\n") { it }.let { cached_LineSeparated_ParentFullOidStrList=it; it };
 
 }
 

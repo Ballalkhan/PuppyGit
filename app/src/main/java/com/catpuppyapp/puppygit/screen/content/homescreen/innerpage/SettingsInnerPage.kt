@@ -37,7 +37,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.catpuppyapp.puppygit.compose.ClickableText
 import com.catpuppyapp.puppygit.compose.ConfirmDialog2
 import com.catpuppyapp.puppygit.compose.ConfirmDialog3
@@ -55,6 +54,7 @@ import com.catpuppyapp.puppygit.compose.SingleSelectList
 import com.catpuppyapp.puppygit.compose.SoftkeyboardVisibleListener
 import com.catpuppyapp.puppygit.compose.SpacerRow
 import com.catpuppyapp.puppygit.constants.Cons
+import com.catpuppyapp.puppygit.dev.DevFeature
 import com.catpuppyapp.puppygit.play.pro.R
 import com.catpuppyapp.puppygit.settings.SettingsCons
 import com.catpuppyapp.puppygit.settings.SettingsUtil
@@ -69,10 +69,11 @@ import com.catpuppyapp.puppygit.utils.LanguageUtil
 import com.catpuppyapp.puppygit.utils.Lg2HomeUtils
 import com.catpuppyapp.puppygit.utils.Msg
 import com.catpuppyapp.puppygit.utils.MyLog
-import com.catpuppyapp.puppygit.utils.PrefMan
-import com.catpuppyapp.puppygit.utils.PrefUtil
+import com.catpuppyapp.puppygit.utils.pref.PrefMan
+import com.catpuppyapp.puppygit.utils.pref.PrefUtil
 import com.catpuppyapp.puppygit.utils.StrListUtil
 import com.catpuppyapp.puppygit.utils.UIHelper
+import com.catpuppyapp.puppygit.utils.cache.Cache
 import com.catpuppyapp.puppygit.utils.doJobThenOffLoading
 import com.catpuppyapp.puppygit.utils.encrypt.MasterPassUtil
 import com.catpuppyapp.puppygit.utils.fileopenhistory.FileOpenHistoryMan
@@ -86,11 +87,12 @@ import com.catpuppyapp.puppygit.utils.state.mutableCustomStateListOf
 import com.catpuppyapp.puppygit.utils.state.mutableCustomStateOf
 import com.catpuppyapp.puppygit.utils.storagepaths.StoragePathsMan
 
-private const val stateKeyTag = "SettingsInnerPage"
 private const val TAG = "SettingsInnerPage"
 
 @Composable
 fun SettingsInnerPage(
+    stateKeyTag:String,
+
     contentPadding: PaddingValues,
     needRefreshPage:MutableState<String>,
     openDrawer:()->Unit,
@@ -99,6 +101,7 @@ fun SettingsInnerPage(
     goToFilesPage:(path:String)->Unit,
 
 ){
+    val stateKeyTag = Cache.getComponentKey(stateKeyTag, TAG)
 
     // softkeyboard show/hidden relate start
 
@@ -236,6 +239,11 @@ fun SettingsInnerPage(
     val cleanFileOpenHistory = rememberSaveable { mutableStateOf(false) }
 
     val allowUnknownHosts = rememberSaveable { mutableStateOf(settingsState.value.sshSetting.allowUnknownHosts) }
+    val dev_singleDiffOn = rememberSaveable { DevFeature.singleDiff.state }
+    val dev_showMatchedAllAtDiff = rememberSaveable { DevFeature.showMatchedAllAtDiff.state }
+    val dev_showRandomLaunchingText = rememberSaveable { DevFeature.showRandomLaunchingText.state }
+    val dev_legacyChangeListLoadMethod = rememberSaveable { DevFeature.legacyChangeListLoadMethod.state }
+
 //    val showResetKnownHostsDialog = rememberSaveable { mutableStateOf(false) }
     val showForgetHostKeysDialog = rememberSaveable { mutableStateOf(false) }
     if(showForgetHostKeysDialog.value) {
@@ -737,18 +745,18 @@ fun SettingsInnerPage(
     BackHandler(enabled = isBackHandlerEnable.value, onBack = {backHandlerOnBack()})
     //back handler block end
 
-    val itemFontSize = 20.sp
-    val itemDescFontSize = 15.sp
-    val switcherIconSize = 60.dp
-    val selectorWidth = MyStyleKt.DropDownMenu.minWidth.dp
+    val itemFontSize = MyStyleKt.SettingsItem.itemFontSize
+    val itemDescFontSize = MyStyleKt.SettingsItem.itemDescFontSize
+    val switcherIconSize = MyStyleKt.SettingsItem.switcherIconSize
+    val selectorWidth = MyStyleKt.SettingsItem.selectorWidth
 
-    val itemLeftWidthForSwitcher = .8f
-    val itemLeftWidthForSelector = .6f
+    val itemLeftWidthForSwitcher = MyStyleKt.SettingsItem.itemLeftWidthForSwitcher
+    val itemLeftWidthForSelector = MyStyleKt.SettingsItem.itemLeftWidthForSelector
 
     Column(
         modifier = Modifier
-            .padding(contentPadding)
             .fillMaxSize()
+            .padding(contentPadding)
             .verticalScroll(listState)
     ) {
         SettingsTitle(stringResource(R.string.general))
@@ -1190,6 +1198,111 @@ fun SettingsInnerPage(
                 Text(stringResource(R.string.manage_storage), fontSize = itemFontSize)
                 Text(stringResource(R.string.if_you_want_to_clone_repo_into_external_storage_this_permission_is_required), fontSize = itemDescFontSize, fontWeight = FontWeight.Light)
             }
+        }
+
+        //一些用来测试的功能
+        if(devModeOn.value) {
+            SettingsTitle("Dev Zone")
+
+            // single diff
+            SettingsContent(
+                onClick = {
+                    DevFeature.singleDiff.update(!dev_singleDiffOn.value)
+                }
+            ) {
+                Column(modifier = Modifier.fillMaxWidth(itemLeftWidthForSwitcher)) {
+                    Text(DevFeature.singleDiff.text, fontSize = itemFontSize)
+                }
+
+                Icon(
+                    modifier = Modifier.size(switcherIconSize),
+                    imageVector = UIHelper.getIconForSwitcher(dev_singleDiffOn.value),
+                    contentDescription = if(dev_singleDiffOn.value) stringResource(R.string.enable) else stringResource(R.string.disable),
+                    tint = UIHelper.getColorForSwitcher(dev_singleDiffOn.value),
+
+                )
+            }
+
+            // line menu item, matched all and no-matched all
+            SettingsContent(
+                onClick = {
+                    DevFeature.showMatchedAllAtDiff.update(!dev_showMatchedAllAtDiff.value)
+                }
+            ) {
+                val itemEnabled = dev_showMatchedAllAtDiff.value
+
+                Column(modifier = Modifier.fillMaxWidth(itemLeftWidthForSwitcher)) {
+                    Text(DevFeature.showMatchedAllAtDiff.text, fontSize = itemFontSize)
+                }
+
+                Icon(
+                    modifier = Modifier.size(switcherIconSize),
+                    imageVector = UIHelper.getIconForSwitcher(itemEnabled),
+                    contentDescription = if(itemEnabled) stringResource(R.string.enable) else stringResource(R.string.disable),
+                    tint = UIHelper.getColorForSwitcher(itemEnabled),
+
+                )
+            }
+
+            // show random launching text when app loading
+            SettingsContent(
+                onClick = {
+                    DevFeature.showRandomLaunchingText.update(!dev_showRandomLaunchingText.value, activityContext)
+                }
+            ) {
+                val itemEnabled = dev_showRandomLaunchingText.value
+
+                Column(modifier = Modifier.fillMaxWidth(itemLeftWidthForSwitcher)) {
+                    Text(DevFeature.showRandomLaunchingText.text, fontSize = itemFontSize)
+                }
+
+                Icon(
+                    modifier = Modifier.size(switcherIconSize),
+                    imageVector = UIHelper.getIconForSwitcher(itemEnabled),
+                    contentDescription = if(itemEnabled) stringResource(R.string.enable) else stringResource(R.string.disable),
+                    tint = UIHelper.getColorForSwitcher(itemEnabled),
+
+                )
+            }
+
+            // legacy change list load method
+            SettingsContent(
+                onClick = {
+                    DevFeature.legacyChangeListLoadMethod.update(!dev_legacyChangeListLoadMethod.value, activityContext)
+                }
+            ) {
+                val itemEnabled = dev_legacyChangeListLoadMethod.value
+
+                Column(modifier = Modifier.fillMaxWidth(itemLeftWidthForSwitcher)) {
+                    Text(DevFeature.legacyChangeListLoadMethod.text, fontSize = itemFontSize)
+
+                    // desc
+                    DevFeature.legacyChangeListLoadMethod.desc.let {
+                        if(it.isNotBlank()) {
+                            Text(it, fontSize = itemDescFontSize, fontWeight = FontWeight.Light)
+                        }
+                    }
+
+                }
+
+                Icon(
+                    modifier = Modifier.size(switcherIconSize),
+                    imageVector = UIHelper.getIconForSwitcher(itemEnabled),
+                    contentDescription = if(itemEnabled) stringResource(R.string.enable) else stringResource(R.string.disable),
+                    tint = UIHelper.getColorForSwitcher(itemEnabled),
+
+                )
+            }
+
+            // crash the app
+            SettingsContent(onClick = {
+                throw RuntimeException("App Crashed For Test Purpose")
+            }) {
+                Column {
+                    Text("Crash App", fontSize = itemFontSize)
+                }
+            }
+
         }
 
         SpacerRow()

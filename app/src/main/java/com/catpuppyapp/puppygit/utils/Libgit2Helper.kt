@@ -12,9 +12,11 @@ import com.catpuppyapp.puppygit.data.entity.RepoEntity
 import com.catpuppyapp.puppygit.data.repository.CredentialRepository
 import com.catpuppyapp.puppygit.data.repository.RemoteRepository
 import com.catpuppyapp.puppygit.data.repository.RepoRepository
+import com.catpuppyapp.puppygit.dev.DevFeature
 import com.catpuppyapp.puppygit.dto.RemoteDto
 import com.catpuppyapp.puppygit.dto.createCommitDto
 import com.catpuppyapp.puppygit.dto.createFileHistoryDto
+import com.catpuppyapp.puppygit.dto.createSimpleCommitDto
 import com.catpuppyapp.puppygit.dto.createSubmoduleDto
 import com.catpuppyapp.puppygit.etc.RepoPendingTask
 import com.catpuppyapp.puppygit.etc.Ret
@@ -36,6 +38,8 @@ import com.catpuppyapp.puppygit.git.SubmoduleDto
 import com.catpuppyapp.puppygit.git.TagDto
 import com.catpuppyapp.puppygit.git.Upstream
 import com.catpuppyapp.puppygit.jni.LibgitTwo
+import com.catpuppyapp.puppygit.jni.SaveBlobRet
+import com.catpuppyapp.puppygit.jni.SaveBlobRetCode
 import com.catpuppyapp.puppygit.jni.SshAskUserUnknownHostRequest
 import com.catpuppyapp.puppygit.play.pro.R
 import com.catpuppyapp.puppygit.screen.functions.KnownHostRequestStateMan
@@ -44,6 +48,7 @@ import com.catpuppyapp.puppygit.settings.SettingsUtil
 import com.catpuppyapp.puppygit.style.MyStyleKt
 import com.github.git24j.core.AnnotatedCommit
 import com.github.git24j.core.Apply
+import com.github.git24j.core.Blob
 import com.github.git24j.core.Branch
 import com.github.git24j.core.Checkout
 import com.github.git24j.core.Cherrypick
@@ -52,9 +57,11 @@ import com.github.git24j.core.Commit
 import com.github.git24j.core.Config
 import com.github.git24j.core.Credential
 import com.github.git24j.core.Diff
+import com.github.git24j.core.Diff.Line
 import com.github.git24j.core.FetchOptions
 import com.github.git24j.core.GitObject
 import com.github.git24j.core.Graph
+import com.github.git24j.core.IBitEnum
 import com.github.git24j.core.Index
 import com.github.git24j.core.Merge
 import com.github.git24j.core.Oid
@@ -80,6 +87,7 @@ import com.github.git24j.core.Tree
 import io.ktor.util.collections.ConcurrentMap
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -432,12 +440,12 @@ object Libgit2Helper {
         // 1 存在冲突条目，上面返回的index列表有可能包含 conflict但是又没stage的文件，所以需要进一步检测
         // or
         // 2 不存在冲突条目，但onlyCheckEmpty为假，代表用户想获得不包含冲突条目的index列表
-        val (_, statusMap) = statusListToStatusMap(
+        val (_, statusMap) = runBlocking {statusListToStatusMap(
             repo,
             repoStatusList,
             repoId,
             Cons.gitDiffFromHeadToIndex
-        )
+        )}
         val indexListFromStatusMap = statusMap[Cons.gitStatusKeyIndex]
 
         //这次的值就准确了
@@ -465,18 +473,20 @@ object Libgit2Helper {
         return getRepoStatusList(repo,Status.ShowT.INDEX_AND_WORKDIR,flags)
     }
 
-    @Deprecated("改用 repo.index().hasConflicts() 了")
-    private fun hasConflictItemInStatusList(statusList:StatusList):Boolean {
-        val entryCnt: Int = statusList.entryCount()
-        //until， 左闭右开，左包含，右不包含
-        for (i in 0 until entryCnt)  {
-            val entry = statusList.byIndex(i)
-            if(entry.status.contains(Status.StatusT.CONFLICTED)){
-                return true
-            }
-        }
-        return false;
-    }
+
+//    @Deprecated("改用 repo.index().hasConflicts() 了")
+//    private fun hasConflictItemInStatusList(statusList:StatusList):Boolean {
+//        val entryCnt: Int = statusList.entryCount()
+//        //until， 左闭右开，左包含，右不包含
+//        for (i in 0 until entryCnt)  {
+//            val entry = statusList.byIndex(i)
+//            if(entry.status.contains(Status.StatusT.CONFLICTED)){
+//                return true
+//            }
+//        }
+//        return false;
+//    }
+
 
     fun hasConflictItemInRepo(repo:Repository):Boolean {
         /*
@@ -541,15 +551,27 @@ object Libgit2Helper {
      * index时worktree的列表为空，反之，statuslist是worktree的列表时，index列表为空
      * 特殊情况：conflict条目在index和workdir两个列表都有，且条目一样
      * */
-    fun statusListToStatusMap(
+    @Deprecated("实测这方法比原来的慢，不建议使用，实际上会先在jni循环一轮，" +
+            "再在java里循环一轮，只有当jni耗时超过在c里循环一轮的耗时时，这种方式才有可能提升性能，" +
+            "但实际上，没什么效果，建议保留这个方法，但默认禁用即可，别删除，" +
+            "以后要是有精力，改成全在jni里创建对象试试，只用一轮循环，性能可能会超过legacy的方法")
+    suspend fun statusListToStatusMap_LoadListInJni(
         repo: Repository,
         statusList:StatusList,
         repoIdFromDb:String,
+
+        //只有可能是index to worktree或head to index
         fromTo: String,
+
         removeNonExistsConflictItems:Boolean=true
 
         //Pair第1个参数代表本函数是否更新了index，第2个代表返回的数据。
     ):Pair<Boolean, Map<String,List<StatusTypeEntrySaver>>> {
+        val funName = "statusListToStatusMap_LoadListInJni"
+
+        val debugExeTime_Start = System.currentTimeMillis()
+        MyLog.w(TAG, "#$funName(): change list load method: start at $debugExeTime_Start")
+
         //按路径名排序
         val index:MutableList<StatusTypeEntrySaver> = ArrayList()
         val workdir:MutableList<StatusTypeEntrySaver> =ArrayList()
@@ -560,7 +582,196 @@ object Libgit2Helper {
         var isIndexChanged = false
 
         val submodulePathList = getSubmodulePathList(repo)  // submodule name == it's path, so this list is path list too
+        val repoWorkDirPath = getRepoWorkdirNoEndsWithSlash(repo)
 
+        val allStatusEntryDtos = LibgitTwo.getStatusEntries(statusList.rawPointer)
+        val trueIndex2WorktreeFalseHead2Index = fromTo == Cons.gitDiffFromIndexToWorktree;
+        //until， 左闭右开，左包含，右不包含
+        for (i in allStatusEntryDtos)  {
+            val oldFilePath = (if(trueIndex2WorktreeFalseHead2Index) i.indexToWorkDirOldFilePath else i.headToIndexOldFilePath) ?: ""
+            val newFilePath = (if(trueIndex2WorktreeFalseHead2Index) i.indexToWorkDirNewFilePath else i.headToIndexNewFilePath) ?: ""
+            var path= newFilePath
+            var fileSize = (if(trueIndex2WorktreeFalseHead2Index) i.indexToWorkDirNewFileSize else i.headToIndexNewFileSize) ?: 0L
+
+            val status = i.statusFlagToSet();  //status有可能有多个状态，例如：同时包含INDEX_NEW和WT_MODIFIED两种状态
+
+            //忽略的文件一般不需要包含，查询的时候就没查，应该没有状态为忽略的文件
+//                if(status.contains(Status.StatusT.IGNORED)) {
+//
+//                }
+            val statusTypeSaver = StatusTypeEntrySaver()
+            statusTypeSaver.repoWorkDirPath = repoWorkDirPath
+
+//                statusTypeSaver.entry = entry  //这个会随着列表的释放而被释放，持有引用可能会变成空指针
+            statusTypeSaver.repoIdFromDb = repoIdFromDb
+
+            if(status.contains(Status.StatusT.CONFLICTED)) {  //index或worktree都会包含冲突条目
+                val mustPath = newFilePath.ifEmpty { oldFilePath }
+                if(mustPath.isNotEmpty()) {
+                    val f = File(getRepoWorkdirNoEndsWithSlash(repo), mustPath)
+                    if(!f.exists() && removeNonExistsConflictItems){
+                        MyLog.w(TAG, "#$funName(): removed a Non-exists conflict item from git, file '$mustPath' may delete after it become conflict item")
+
+                        repoIndex.conflictRemove(mustPath)
+                        isIndexChanged = true
+                    }else {
+                        statusTypeSaver.changeType=Cons.gitStatusConflict
+                        conflict.add(statusTypeSaver)
+                    }
+
+                }else{
+                    MyLog.w(TAG, "#$funName(): conflict item with empty path!, repoWorkDir at '$repoWorkDirPath'")
+                }
+            }else{
+                //判断index还是worktree，用不同的变量判断，然后把条目添加到不同的列表
+                if(fromTo == Cons.gitDiffFromHeadToIndex) {  //index
+                    if(status.contains(Status.StatusT.INDEX_NEW)){
+                        statusTypeSaver.changeType=Cons.gitStatusNew
+                        index.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.INDEX_DELETED)){
+//                            println("newFIle:::"+newFile?.size?:0) // 0，无法获取已删除文件的大小，但提交后再diff，就能获取到大小了，可能是bug
+//                            println("oldFile:::"+oldFile?.size?:0)  // 0
+                        fileSize = i.headToIndexOldFileSize ?: 0L
+                        path=oldFilePath
+                        statusTypeSaver.changeType=Cons.gitStatusDeleted
+                        index.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.INDEX_MODIFIED)){
+                        statusTypeSaver.changeType=Cons.gitStatusModified
+                        index.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.INDEX_RENAMED)){
+                        statusTypeSaver.changeType=Cons.gitStatusRenamed
+                        index.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.INDEX_TYPECHANGE)){
+                        statusTypeSaver.changeType=Cons.gitStatusTypechanged
+                        index.add(statusTypeSaver)
+                    }
+
+                }else {  // worktree
+                    if(status.contains(Status.StatusT.WT_NEW)){ //untracked
+                        statusTypeSaver.changeType=Cons.gitStatusNew
+                        workdir.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.WT_DELETED)){
+                        //如果类型是删除，把file和path替换成旧文件的，不然文件大小会是0
+                        fileSize = i.indexToWorkDirOldFileSize ?: 0L
+                        path=oldFilePath
+                        statusTypeSaver.changeType=Cons.gitStatusDeleted
+                        workdir.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.WT_MODIFIED)){
+                        statusTypeSaver.changeType=Cons.gitStatusModified
+                        workdir.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.WT_RENAMED)){
+                        statusTypeSaver.changeType=Cons.gitStatusRenamed
+                        workdir.add(statusTypeSaver)
+                    }else if(status.contains(Status.StatusT.WT_TYPECHANGE)){
+                        statusTypeSaver.changeType=Cons.gitStatusTypechanged
+                        workdir.add(statusTypeSaver)
+                    }
+
+                }
+            }
+
+
+
+            //为目录递归添加文件
+            //xTODO 先改成检测status的时候把submodule排除
+            //xTODO(未来实现submodule的时候再做这个): 需要区分submodule和文件夹，如果是submodule，不遍历StatusEntry.itemType为submodule，当作文件夹条目列出来且不可diff
+            //xTODO: 如果path是个路径: 递归遍历，把里面所有文件都作为一个条目添加到map，每个条目的type都和路径的type一样，例如文件夹是untracked，则里面 所有的条目都是untracked
+            val canonicalPath = getRepoCanonicalPath(repo,path)
+            val fileType = getRepoPathSpecType(path)
+//                statusTypeSaver.itemType = fileType
+
+//                statusTypeSaver.itemType= if(submodulePathList.contains(path) && File(canonicalPath).isDirectory) Cons.gitItemTypeSubmodule else fileType
+            statusTypeSaver.itemType= if(submodulePathList.contains(path)) Cons.gitItemTypeSubmodule else fileType
+
+            if(statusTypeSaver.itemType == Cons.gitItemTypeSubmodule) {
+                statusTypeSaver.dirty = submoduleIsDirty(repo, path)
+            }
+
+            statusTypeSaver.canonicalPath = canonicalPath
+            statusTypeSaver.fileName = getFileNameFromCanonicalPath(canonicalPath)  // or File(canonicalPath).name
+            statusTypeSaver.relativePathUnderRepo = path
+            statusTypeSaver.fileParentPathOfRelativePath = getParentPathEndsWithSeparator(path)
+            statusTypeSaver.fileSizeInBytes = fileSize
+
+            //目前：libgit2 1.7.1有bug，status获取已删除文件有可能大小为0(并非百分百，若index为空，有可能获取到已删除文件的真实大小)，但实际不为0，所以这里检查下，如果大小等于0且类型是删除，用diffTree查询一下
+            //这两个判断条件没一个多余，大小为0的检测的作用是日后如果libgit2修复了获取删除文件大小错误的bug，就不会在执行此方法了，代码不用改动，又或者偶然能获取到正常文件大小，则不需要再多余查询，所以第1个条件必须
+            //第2个条件是因为我暂时只发现类型为删除的文件获取大小异常，所以其他类型不用检测，若日后发现其他类型也有问题，再改判断条件即可
+            if(statusTypeSaver.fileSizeInBytes==0L && statusTypeSaver.changeType == Cons.gitStatusDeleted) {
+                val diffItem = getSingleDiffItem(
+                    repo,
+                    statusTypeSaver.relativePathUnderRepo,
+                    fromTo,
+                    onlyCheckFileSize = true,
+
+                    // only check file size, most time very fast, no need set channel, the channel only require when loading a huge content
+                    loadChannel = null,
+                    checkChannelLinesLimit = -1,
+                    checkChannelSizeLimit = -1L,
+//                        loadChannelLock = null,
+                )
+                statusTypeSaver.fileSizeInBytes = diffItem.getEfficientFileSize()
+            }
+
+
+
+        }
+
+        if(isIndexChanged) {
+            repoIndex.write()
+        }
+
+        val resultMap:MutableMap<String,MutableList<StatusTypeEntrySaver>> = HashMap()
+        resultMap[Cons.gitStatusKeyIndex] = index
+        resultMap[Cons.gitStatusKeyWorkdir] = workdir
+        resultMap[Cons.gitStatusKeyConflict] = conflict
+
+
+
+        val debugExeTime_End = System.currentTimeMillis()
+        MyLog.w(TAG, "#$funName(): change list load method: end at $debugExeTime_End, spent: ${debugExeTime_End - debugExeTime_Start}")
+
+        return Pair(isIndexChanged, resultMap);
+    }
+
+
+    /**return:
+     * {
+     *      index:{path:status, ...},
+     *      workdir:{path:status, ...},
+     *      conflict:{path:status}
+     * }，
+     * 注：untracked属于workdir
+     *
+     * 根据fromTo判断是index还是worktree的status list，然后往对应集合填条目(历史遗留问题，所以有index和work两个列表，其实有一个就行)。
+     * index时worktree的列表为空，反之，statuslist是worktree的列表时，index列表为空
+     * 特殊情况：conflict条目在index和workdir两个列表都有，且条目一样
+     * */
+    suspend fun statusListToStatusMap_legacy(
+        repo: Repository,
+        statusList:StatusList,
+        repoIdFromDb:String,
+        fromTo: String,
+        removeNonExistsConflictItems:Boolean=true
+
+        //Pair第1个参数代表本函数是否更新了index，第2个代表返回的数据。
+    ):Pair<Boolean, Map<String,List<StatusTypeEntrySaver>>> {
+        val funName = "statusListToStatusMap_legacy"
+
+        val debugExeTime_Start = System.currentTimeMillis()
+        MyLog.w(TAG, "#$funName(): change list load method: start at: $debugExeTime_Start")
+
+
+        //按路径名排序
+        val index:MutableList<StatusTypeEntrySaver> = ArrayList()
+        val workdir:MutableList<StatusTypeEntrySaver> =ArrayList()
+        val conflict:MutableList<StatusTypeEntrySaver> = ArrayList()
+
+        val entryCnt: Int = statusList.entryCount()
+        val repoIndex = repo.index()
+        var isIndexChanged = false
+
+        val submodulePathList = getSubmodulePathList(repo)  // submodule name == it's path, so this list is path list too
+        val repoWorkDirPath = getRepoWorkdirNoEndsWithSlash(repo)
 
         //until， 左闭右开，左包含，右不包含
         for (i in 0 until entryCnt)  {
@@ -595,6 +806,8 @@ object Libgit2Helper {
 //
 //                }
             val statusTypeSaver = StatusTypeEntrySaver()
+            statusTypeSaver.repoWorkDirPath = repoWorkDirPath
+
 //                statusTypeSaver.entry = entry  //这个会随着列表的释放而被释放，持有引用可能会变成空指针
             statusTypeSaver.repoIdFromDb = repoIdFromDb
 
@@ -603,7 +816,7 @@ object Libgit2Helper {
                 if(mustPath.isNotEmpty()) {
                     val f = File(getRepoWorkdirNoEndsWithSlash(repo), mustPath)
                     if(!f.exists() && removeNonExistsConflictItems){
-                        MyLog.w(TAG, "#statusListToStatusMap: removed a Non-exists conflict item from git, file '$mustPath' may delete after it become conflict item")
+                        MyLog.w(TAG, "#$funName(): removed a Non-exists conflict item from git, file '$mustPath' may delete after it become conflict item")
 
                         repoIndex.conflictRemove(mustPath)
                         isIndexChanged = true
@@ -613,7 +826,7 @@ object Libgit2Helper {
                     }
 
                 }else{
-                    MyLog.w(TAG, "#statusListToStatusMap: conflict item with empty path!")
+                    MyLog.w(TAG, "#$funName(): conflict item with empty path!, repoWorkDir at '$repoWorkDirPath'")
                 }
             }else{
                 //判断index还是worktree，用不同的变量判断，然后把条目添加到不同的列表
@@ -683,6 +896,7 @@ object Libgit2Helper {
             statusTypeSaver.canonicalPath = canonicalPath
             statusTypeSaver.fileName = getFileNameFromCanonicalPath(canonicalPath)  // or File(canonicalPath).name
             statusTypeSaver.relativePathUnderRepo = path
+            statusTypeSaver.fileParentPathOfRelativePath = getParentPathEndsWithSeparator(path)
             statusTypeSaver.fileSizeInBytes = file?.size?.toLong()?:0L
 
             //目前：libgit2 1.7.1有bug，status获取已删除文件有可能大小为0(并非百分百，若index为空，有可能获取到已删除文件的真实大小)，但实际不为0，所以这里检查下，如果大小等于0且类型是删除，用diffTree查询一下
@@ -745,8 +959,50 @@ object Libgit2Helper {
         resultMap[Cons.gitStatusKeyWorkdir] = workdir
         resultMap[Cons.gitStatusKeyConflict] = conflict
 
+
+        val debugExeTime_End = System.currentTimeMillis()
+        MyLog.w(TAG, "#$funName(): change list load method: end at $debugExeTime_End, spent: ${debugExeTime_End - debugExeTime_Start}")
+
         return Pair(isIndexChanged, resultMap);
     }
+
+
+    suspend fun statusListToStatusMap(
+        repo: Repository,
+        statusList:StatusList,
+        repoIdFromDb:String,
+        fromTo: String,
+        removeNonExistsConflictItems:Boolean=true
+
+        //Pair第1个参数代表本函数是否更新了index，第2个代表返回的数据。
+    ):Pair<Boolean, Map<String,List<StatusTypeEntrySaver>>> {
+
+        //如果不使用旧的加载方式，就用新的
+        return if(DevFeature.legacyChangeListLoadMethod.state.value) {
+            MyLog.d(TAG, "will use change list load method: `statusListToStatusMap_legacy`")
+
+            statusListToStatusMap_legacy(
+                repo,
+                statusList,
+                repoIdFromDb,
+                fromTo,
+                removeNonExistsConflictItems,
+
+            )
+        }else {
+            MyLog.d(TAG, "will use change list load method: `statusListToStatusMap_LoadListInJni`")
+
+            statusListToStatusMap_LoadListInJni(
+                repo,
+                statusList,
+                repoIdFromDb,
+                fromTo,
+                removeNonExistsConflictItems,
+
+            )
+        }
+    }
+
 
     fun getGitUrlType(gitUrl: String): Int {
         //这个条件一定要“只要不是http/https就是ssh”这种逻辑，因为http和https就两种，能穷举完，但ssh我不太了解，而且有的sshurl是用户名写最前面，匹配起来恶心得很！
@@ -792,6 +1048,7 @@ object Libgit2Helper {
         val diff = if(treeToWorkTree) Diff.treeToWorkdir(repo, tree1, options) else Diff.treeToTree(repo, tree1, tree2, options)
 
         val submodulePathList = getSubmodulePathList(repo)  // submodule name == it's path
+        val repoWorkDirPath = getRepoWorkdirNoEndsWithSlash(repo)
 
         diff.foreach(
             { delta: Diff.Delta, progress: Float ->
@@ -812,11 +1069,12 @@ object Libgit2Helper {
 
                      */
                 val stes = StatusTypeEntrySaver()
+                stes.repoWorkDirPath = repoWorkDirPath
                 stes.repoIdFromDb = repoId
                 stes.relativePathUnderRepo = newFile.path  //不管新增还是删除还是重命名文件，新旧文件都有path而且都一样，所以用哪个都行
                 stes.canonicalPath = getRepoCanonicalPath(repo, stes.relativePathUnderRepo)
                 stes.fileName = getFileNameFromCanonicalPath(stes.relativePathUnderRepo)  //用相对路径或完整路径都能取出文件名
-
+                stes.fileParentPathOfRelativePath = getParentPathEndsWithSeparator(stes.relativePathUnderRepo)
                 // hm, if a folder was submodule dir, but users remove it, then create a same name file, the file type will become "type changed", and actually the file is not submodule anymore
                 //   so, here check the path is dir or not, if not, dont set type to submodule, but this check may will create many File objects, wasted memory......
 //                    stes.itemType= if(submodulePathList.contains(stes.relativePathUnderRepo) && File(stes.canonicalPath).isDirectory) Cons.gitItemTypeSubmodule else Cons.gitItemTypeFile
@@ -1242,30 +1500,31 @@ object Libgit2Helper {
 
     //x 加了个获取diff条目列表的函数，和这个配合即可，不用改这个函数了) 废案)写个获取一个列表的diffitem的方法，返回一个List<DiffItem>，然后把这个single方法内部调用列表方法，只不过列表里只设置一个条目，写单个和列表逻辑都一样，但列表更通用
     //获取某个文件新增多少行，删除多少行，以及新增和删除行的内容和行号
-    fun getSingleDiffItem(repo:Repository, relativePathUnderRepo:String, fromTo:String,
+    suspend fun getSingleDiffItem(
+        repo:Repository, relativePathUnderRepo:String, fromTo:String,
         // changeType:String, //changeType 用来判断要diff还是patch，如果是修改类型，用patch；若是新增和删除，用diff？好像不用，都用patch就行？patch貌似只要是改变的文件，都能处理，无论新增删除修改，但如果是没修改的就返回null
-                          tree1:Tree?=null, tree2:Tree?=null,
-                          diffOptionsFlags:EnumSet<Diff.Options.FlagT> = getDefaultDiffOptionsFlags(),
-                          onlyCheckFileSize:Boolean = false,
-                          reverse: Boolean=false,
-                          treeToWorkTree: Boolean = false,
-                          maxSizeLimit:Long = SettingsUtil.getSettingsSnapshot().diff.diffContentSizeMaxLimit,
+        tree1:Tree?=null, tree2:Tree?=null,
+        diffOptionsFlags:EnumSet<Diff.Options.FlagT> = getDefaultDiffOptionsFlags(),
+        onlyCheckFileSize:Boolean = false,
+        reverse: Boolean=false,
+        treeToWorkTree: Boolean = false,
+        maxSizeLimit:Long = SettingsUtil.getSettingsSnapshot().diff.diffContentSizeMaxLimit,
 
         // for abort loading,
         // if need not check abort signal, pass null to this param,
         // e.g. most time only check file size no need check abort,
         // because is fast, that case can pass null, but if try get diff conent,
         // I suggessted pass a channel and send abort signal when page destoryed
-                          loadChannel: Channel<Int>?,
-                          checkChannelLinesLimit:Int,  // only work when `loadChannel` is not null
-                          checkChannelSizeLimit:Long,  // only work when `loadChannel` is not null
-//                              loadChannelLock:Mutex?,
-    )
-            :DiffItemSaver{
+        loadChannel: Channel<Int>?,
+        checkChannelLinesLimit:Int,  // only work when `loadChannel` is not null
+        checkChannelSizeLimit:Long,  // only work when `loadChannel` is not null
+        // loadChannelLock:Mutex?,
+    ):DiffItemSaver{
         val funName = "getSingleDiffItem"
         MyLog.d(TAG, "#$funName(): relativePathUnderRepo=${relativePathUnderRepo}, fromTo=${fromTo}")
 
-        val diffItem = DiffItemSaver()
+        val diffItem = DiffItemSaver(relativePathUnderRepo = relativePathUnderRepo)
+
         val options = Diff.Options.create()
 
         val opFlags = diffOptionsFlags.toMutableSet()
@@ -1393,6 +1652,9 @@ object Libgit2Helper {
             for(j in 0 until lineCnt) {
                 if(loadChannel!=null) {
                     if(++checkChannelLinesCount > checkChannelLinesLimit || checkChannelContentSizeCount>checkChannelSizeLimit) {
+                        // for make `job.cancel()` work
+                        delay(1)
+
                         val recv = loadChannel.tryReceive()
                         if(recv.isClosed){  // not failure meant success or closed
 //                                if(!recv.isClosed) {
@@ -1425,7 +1687,20 @@ object Libgit2Helper {
                     return diffItem
                 }
 
-                pLine.originType = ""+line.origin
+                line.origin.let {
+                    pLine.originType = it.toString()
+
+                    if(it == Line.OriginType.ADDITION) {
+                        diffItem.addedLines++
+                    }else if(it == Line.OriginType.DELETION) {
+                        diffItem.deletedLines++
+                    }
+
+                    diffItem.allLines++
+                    Unit
+                }
+
+
                 pLine.oldLineNum= line.oldLineno /** Line number in old file or -1 for added line */
                 pLine.newLineNum=line.newLineno  /** Line number in new file or -1 for deleted line */
 
@@ -3912,13 +4187,16 @@ object Libgit2Helper {
         if(commitOidStr.isBlank()) {
             return CommitDto()
         }
-        val commitOid = Oid.of(commitOidStr)
-        if(commitOid.isNullOrEmptyOrZero) {
-            return CommitDto()
+        //后面如果出错会返回这个dto
+        val errReturnDto = CommitDto(oidStr = commitOidStr, shortOidStr = getShortOidStrByFull(commitOidStr))
+
+        val commitOid = runCatching { Oid.of(commitOidStr) }.getOrNull()
+        if(commitOid == null || commitOid.isNullOrEmptyOrZero) {
+            return errReturnDto
         }
 
         val allBranchList = getBranchList(repo)
-        val commit = resolveCommitByHash(repo, commitOidStr)?:return CommitDto()
+        val commit = resolveCommitByHash(repo, commitOidStr)?:return errReturnDto
 
         val repoIsShallow = isRepoShallow(repo)
 //            val shallowOidList = ShallowManage.getShallowOidList(repo.workdir().toString()+File.separator+".git")
@@ -3946,7 +4224,7 @@ object Libgit2Helper {
     }
 
     //返回值 (nextOid, CommitDtoList)，nextOid就是CommitDtoList列表里最后一个元素之后的Oid，用来实现加载更多，如果不存在下一个元素，则是null，意味着已经遍历到提交树的最初提交了
-    fun getCommitList(
+    suspend fun getCommitList(
         repo: Repository,
         revwalk: Revwalk,
         initNext:Oid?,
@@ -4006,6 +4284,10 @@ object Libgit2Helper {
                 //check channel, may received terminal signal
                 if(++checkChannelCount > checkChannelFrequency) {
                     //TODO 这个检测可以改成 delay(1) ，然后再外部希望终止任务时，调用下job.cancel()即可，另外delay(1)的作用是响应cancel()使代码块抛出canceledException()
+                    //20250430：现在外部没靠job.cancel()取消任务，还是用的channel，不过加个delay没坏处，可响应compose 用的scope的取消“信号”，虽然我不确定compose销毁时是否会对scope.launch的任务调用cancel()。。。。。。
+                    delay(1)
+
+
                     val recv = loadChannel.tryReceive()
 //                        println("recv.toString(): ${recv.toString()}")
                     if(recv.isClosed){  // not failure meant success or closed
@@ -4038,7 +4320,7 @@ object Libgit2Helper {
      * @return 上一条目在树中的id，可能是null但仍有更多提交，因为如果提交中没有条目就会返回null，但不代表后续的提交中没有
      *
      */
-    fun getFileHistoryList(
+    suspend fun getFileHistoryList(
         repo: Repository,
         revwalk: Revwalk,
         initNext:Oid?,
@@ -4074,11 +4356,19 @@ object Libgit2Helper {
 
         var checkChannelCount = 0
 
+
+        val repoWorkDirPath = getRepoWorkdirNoEndsWithSlash(repo)
+
+        val commitList = mutableListOf<String>()
+
         while (next!=null) {
             try {
 //                    try {
                 //check channel, may received terminal signal
                 if(++checkChannelCount > checkChannelFrequency) {
+                    //响应job.cancel()或 （后面没测试过）compose销毁时对scope里执行的任务的取消请求
+                    delay(1)
+
                     val recv = loadChannel.tryReceive()
 //                        println("recv.toString(): ${recv.toString()}")
                     if(recv.isClosed){  // not failure meant success or closed
@@ -4117,6 +4407,7 @@ object Libgit2Helper {
                                 val entryOidStr = entryOid.toString()
                                 if(entryOidStr != lastVersionEntryOid) {
                                     //这两个如果一个为null另一个不为null，必然会漏条目，不应该存在这个状态，若发生，肯定哪里出错了，抛个异常
+                                    //开发模式如果启用，执行一个错误检测。（如果出错，条目可能会显示错，不过问题并不是特别严重，所以不强制抛异常）
                                     if(AppModel.devModeOn) {
                                         if((lastCommit==null && lastVersionEntryOid!=null)
                                             || (lastCommit!=null && lastVersionEntryOid==null)
@@ -4141,18 +4432,24 @@ object Libgit2Helper {
                                     // 但不管怎样，遍历到提交历史末尾，必然会遗漏最后一个条目，需要在循环外处理（已经处理）
                                     if(lastLastCommit != null && lastLastEntryOidStr != null) {
                                         retList.add(createFileHistoryDto(
+                                            repoWorkDirPath = repoWorkDirPath,
                                             commitOidStr= lastLastCommit.id().toString(),
                                             treeEntryOidStr= lastLastEntryOidStr.toString(),
                                             commit=lastLastCommit,
                                             repoId=repoId,
                                             fileRelativePathUnderRepo=fileRelativePathUnderRepo,
-                                            settings = settings
+                                            settings = settings,
+                                            commitList = commitList,
                                         ))
 
 
+                                        //如果在这break，next没更新，定不为null，
+                                        // 所以不会进入循环后面的添加最后一个条目的代码块
                                         if(++count >= pageSize) {
                                             break
                                         }
+
+                                        commitList.clear()
 
                                     }
 
@@ -4160,6 +4457,13 @@ object Libgit2Helper {
                                     //条目id一样，更新下提交id
                                     lastCommit = commit
                                 }
+
+                                //添加提交到拥有当前entry id的列表
+                                // 一个修订版本可能被多个commit引用，例如你修改了文件a，
+                                // 然后提交，然后再创建提交但没修改文件a，
+                                // 这时这些提交引用的是同一个entry id代表的条目
+                                commitList.add(commit.id().toString())
+
                             }
 
                         }
@@ -4177,22 +4481,35 @@ object Libgit2Helper {
         }
 
         //到提交列表末尾了但还没存上最后一个条目（最后一个条目一定会遗漏，必须处理）
+        // 会遗漏的原因： 因为会一直查找到下一个版本才能知道当前版本最初是在哪个提交创建的并存上对应提交，
+        // 而提交列表的尽头就是没有提交，所以最后一个版本一定会遗漏，因此需要单独处理下，
+        // 除非改成存文件每个版本的最新提交，那样就不会遗漏了，但不符合直觉，因为那样显示的提交并非引入当前版本的提交,
+        // 不过这样好像如果最后一个版本刚好就是最后一个提交就不会漏了
         if(next == null) {
             //处理可能没存储的最后一个条目
 
             //最后一个条目没存，存上
             if(lastCommit != null && lastVersionEntryOid != null) {
+                //这里不用再添加，因为在上面添加提交号到列表的代码在判断entry id是否相等前面，所以最后一个提交必然被添加过了
+//                commitList.add(lastCommit.id().toString())
+
                 retList.add(createFileHistoryDto(
+                    repoWorkDirPath = repoWorkDirPath,
                     commitOidStr= lastCommit.id().toString(),
                     treeEntryOidStr= lastVersionEntryOid.toString(),
                     commit=lastCommit,
                     repoId=repoId,
                     fileRelativePathUnderRepo=fileRelativePathUnderRepo,
-                    settings = settings
+                    settings = settings,
+                    commitList = commitList
                 ))
+
             }
 
         }
+
+        //无所谓，gc会出手
+//        commitList.clear()
 
 //            return FileHistoryQueryResult(hasMore, lastVersionEntryOid)
         return Pair(lastVersionEntryOid, next)
@@ -6792,7 +7109,7 @@ object Libgit2Helper {
 
         //转成index/worktree/conflict三个元素的map，每个key对应一个列表
         //这里忽略第一个代表是否更新index的值，因为后面会百分百查询index，所以无需判定
-        val (_, statusMap) = statusListToStatusMap(repo, rawStatusList, repoIdFromDb = repoId, Cons.gitDiffFromIndexToWorktree)
+        val (_, statusMap) = runBlocking {statusListToStatusMap(repo, rawStatusList, repoIdFromDb = repoId, Cons.gitDiffFromIndexToWorktree)}
 
         val retList = mutableListOf<StatusTypeEntrySaver>()
 
@@ -6814,5 +7131,68 @@ object Libgit2Helper {
         return gitRepoState?.toString() ?: context.getString(R.string.invalid)
     }
 
+    /**
+     * 获取简化的CommitDto，只包含必要信息，若传入代表index或worktree的假hash，会返回只包含对应字符串的dto
+     */
+    fun getSimpleCommitDto(repo:Repository, commitHashOrRef:String, repoId: String, settings: AppSettings): Ret<CommitDto?> {
+        return try {
+            //处理假hash： 全0 和 worktree 和 index
+            val commitDto = if(commitHashOrRef.let { it == Cons.git_AllZeroOidStr || it == Cons.git_LocalWorktreeCommitHash || it == Cons.git_IndexCommitHash }) {
+                CommitDto(oidStr = commitHashOrRef, shortOidStr = commitHashOrRef)
+            }else {
+                val ret = Libgit2Helper.resolveCommitByHashOrRef(repo, commitHashOrRef)
+                if(ret.hasError()) {
+                    throw (ret.exception ?: RuntimeException(ret.msg))
+                }
 
+                val commit = ret.data!!
+
+                createSimpleCommitDto(
+                    commitOid = commit.id(),
+                    commit = commit,
+                    repoId = repoId,
+                    settings
+                )
+            }
+
+            Ret.createSuccess(commitDto)
+        }catch (e:Exception) {
+            Msg.requireShowLongDuration("err: ${e.localizedMessage}")
+            MyLog.e(TAG, "#getSimpleCommitDto: query commit info err: ${e.stackTraceToString()}")
+
+            Ret.createError(null, "err: "+e.localizedMessage, exception = e)
+        }
+
+    }
+
+    /**
+     * @return Pair(leftCommit, rightCommit)
+     */
+    fun getLeftRightCommitDto(repo: Repository, leftHashOrRef:String, rightHashOrRef:String, repoId:String, settings: AppSettings):Pair<CommitDto, CommitDto> {
+        val leftRet = Libgit2Helper.getSimpleCommitDto(repo, commitHashOrRef = leftHashOrRef, repoId, settings)
+        val left = if(leftRet.hasError()) CommitDto(oidStr = leftHashOrRef, shortOidStr = Libgit2Helper.getShortOidStrByFull(leftHashOrRef)) else leftRet.data!!
+
+        val rightRet = Libgit2Helper.getSimpleCommitDto(repo, commitHashOrRef = rightHashOrRef, repoId, settings)
+        val right = if(rightRet.hasError()) CommitDto(oidStr = rightHashOrRef, shortOidStr = Libgit2Helper.getShortOidStrByFull(rightHashOrRef)) else rightRet.data!!
+
+        return Pair(left, right)
+    }
+
+    //把msg中的\n换成空格，让\r消失，这样就没换行符了，方便单行显示尽量多的内容
+    fun zipOneLineMsg(msg:String) = msg.replace('\n', ' ').replace("\r", "");
+
+    /**
+     * @param refOrHash 长短引用名或hash皆可，但最好是长的，越完整越好，不易混淆
+     */
+    fun saveFileOfCommitToPath(repo:Repository, refOrHash:String, relativePath:String, genFilePath:(entry:Tree.Entry)->String): SaveBlobRet {
+        val tree = resolveTree(repo, refOrHash) ?: return SaveBlobRet(code = SaveBlobRetCode.ERR_RESOLVE_TREE_FAILED)
+        val entry = getEntryOrNullByPathOrName(tree, relativePath, byName = false) ?: return SaveBlobRet(code = SaveBlobRetCode.ERR_RESOLVE_ENTRY_FAILED)
+
+        return saveEntryToPath(repo, entry, genFilePath(entry))
+    }
+
+    fun saveEntryToPath(repo:Repository, entry:Tree.Entry, savePath:String): SaveBlobRet {
+        val blob = Blob.lookup(repo, entry.id()) ?: return SaveBlobRet(code = SaveBlobRetCode.ERR_RESOLVE_BLOB_FAILED)
+        return SaveBlobRet(code = LibgitTwo.saveBlobToPath(blob, savePath), savePath = savePath)
+    }
 }

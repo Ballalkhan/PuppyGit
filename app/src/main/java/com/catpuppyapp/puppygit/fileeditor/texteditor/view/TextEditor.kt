@@ -1,5 +1,6 @@
 package com.catpuppyapp.puppygit.fileeditor.texteditor.view
 
+import android.os.Parcelable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -23,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -38,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalConfiguration
@@ -47,9 +50,11 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalTextInputService
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.catpuppyapp.puppygit.compose.AcceptButtons
 import com.catpuppyapp.puppygit.compose.ClickableText
@@ -63,6 +68,7 @@ import com.catpuppyapp.puppygit.dto.UndoStack
 import com.catpuppyapp.puppygit.fileeditor.texteditor.state.FindDirection
 import com.catpuppyapp.puppygit.fileeditor.texteditor.state.SelectionOption
 import com.catpuppyapp.puppygit.fileeditor.texteditor.state.TextEditorState
+import com.catpuppyapp.puppygit.fileeditor.texteditor.state.TextFieldState
 import com.catpuppyapp.puppygit.play.pro.R
 import com.catpuppyapp.puppygit.screen.shared.FilePath
 import com.catpuppyapp.puppygit.settings.AppSettings
@@ -70,44 +76,48 @@ import com.catpuppyapp.puppygit.settings.FileEditedPos
 import com.catpuppyapp.puppygit.settings.SettingsUtil
 import com.catpuppyapp.puppygit.style.MyStyleKt
 import com.catpuppyapp.puppygit.ui.theme.Theme
-import com.catpuppyapp.puppygit.utils.EditCache
 import com.catpuppyapp.puppygit.utils.Msg
 import com.catpuppyapp.puppygit.utils.MyLog
+import com.catpuppyapp.puppygit.utils.PatchUtil
 import com.catpuppyapp.puppygit.utils.UIHelper
+import com.catpuppyapp.puppygit.utils.cache.Cache
 import com.catpuppyapp.puppygit.utils.doJobThenOffLoading
 import com.catpuppyapp.puppygit.utils.fileopenhistory.FileOpenHistoryMan
 import com.catpuppyapp.puppygit.utils.replaceStringResList
 import com.catpuppyapp.puppygit.utils.state.CustomStateSaveable
 import com.catpuppyapp.puppygit.utils.state.mutableCustomStateOf
+import kotlinx.parcelize.Parcelize
 
 private const val TAG ="TextEditor"
-private const val stateKeyTag ="TextEditor"
 
+@Parcelize
 class ExpectConflictStrDto(
-    var settings: AppSettings = SettingsUtil.getSettingsSnapshot()
-) {
-    var curConflictStr: String = settings.editor.conflictStartStr
-    var curConflictStrMatched: Boolean = false
+    var conflictStartStr: String = "",
+    var conflictSplitStr: String = "",
+    var conflictEndStr: String = "",
 
+    var curConflictStr: String = conflictStartStr,
+    var curConflictStrMatched: Boolean = false,
+):Parcelable {
     fun reset() {
-        curConflictStr = settings.editor.conflictStartStr
+        curConflictStr = conflictStartStr
         curConflictStrMatched = false
     }
 
     fun getNextExpectConflictStr():String{
-        return if(curConflictStr == settings.editor.conflictStartStr) {
-            settings.editor.conflictSplitStr
-        }else if(curConflictStr == settings.editor.conflictSplitStr) {
-            settings.editor.conflictEndStr
+        return if(curConflictStr == conflictStartStr) {
+            conflictSplitStr
+        }else if(curConflictStr == conflictSplitStr) {
+            conflictEndStr
         }else { // curStr == settings.editor.conflictEndStr
-            settings.editor.conflictStartStr
+            conflictStartStr
         }
     }
 
     fun getCurAndNextExpect():Pair<Int,Int> {
-        val curExpect = if(curConflictStr.startsWith(settings.editor.conflictStartStr)){
+        val curExpect = if(curConflictStr.startsWith(conflictStartStr)){
             0
-        }else if(curConflictStr.startsWith(settings.editor.conflictSplitStr)) {
+        }else if(curConflictStr.startsWith(conflictSplitStr)) {
             1
         }else {
             2
@@ -122,6 +132,9 @@ class ExpectConflictStrDto(
 typealias DecorationBoxComposable = @Composable (
     index: Int,
     isSelected: Boolean,
+    currentField: TextFieldState,
+    focusingIdx:Int,
+    isMultiSelectionMode: Boolean,
     innerTextField: @Composable (modifier: Modifier) -> Unit
 ) -> Unit
 
@@ -138,6 +151,8 @@ private val customTextSelectionColors_hideCursorHandle = MyStyleKt.TextSelection
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TextEditor(
+    stateKeyTag:String,
+
     undoStack:UndoStack,
     curPreviewScrollState: ScrollState,
     requireEditorScrollToPreviewCurPos:MutableState<Boolean>,
@@ -156,11 +171,14 @@ fun TextEditor(
     readOnlyMode:Boolean,
     searchMode:MutableState<Boolean>,
     mergeMode:Boolean,
+    patchMode:Boolean,
     searchKeyword:String,
     fontSize: MutableIntState,
+    fontColor: Color,
 
-    decorationBox: DecorationBoxComposable = { _, _, innerTextField -> innerTextField(Modifier) },
+    decorationBox: DecorationBoxComposable = { _, _, _, _,_, innerTextField -> innerTextField(Modifier) },
 ) {
+    val stateKeyTag = Cache.getComponentKey(stateKeyTag, TAG)
 
     val density = LocalDensity.current
     val deviceConfiguration = LocalConfiguration.current
@@ -188,7 +206,7 @@ fun TextEditor(
 //    val focusRequesters = remember { mutableStateListOf<FocusRequester>() }  //不能用list，滚动两下页面就会报错
 
     val settings = remember { SettingsUtil.getSettingsSnapshot() }
-    val conflictKeyword = remember { mutableStateOf(settings.editor.conflictStartStr) }
+    val conflictKeyword = remember(settings.editor.conflictStartStr) { mutableStateOf(settings.editor.conflictStartStr) }
 
 
 
@@ -197,7 +215,7 @@ fun TextEditor(
 //    var lastFirstVisibleLineIndexState  by remember { mutableIntStateOf(lastEditedPos.firstVisibleLineIndex) }
 
     val showGoToLineDialog  = rememberSaveable { mutableStateOf(false) }
-    val goToLineValue  = rememberSaveable { mutableStateOf("") }
+    val goToLineValue  = mutableCustomStateOf(stateKeyTag, "goToLineValue") { TextFieldValue("") }
     val lastVisibleLineState  = rememberSaveable { mutableStateOf(0) }
 
     //是否显示光标拖手(cursor handle
@@ -211,20 +229,20 @@ fun TextEditor(
     //没找到合适的方法手动启用，因此默认启用，暂时没更改的场景
     val allowKeyboard = rememberSaveable { mutableStateOf(true) }
 
-    val expectConflictStrDto = mutableCustomStateOf(stateKeyTag, "expectConflict", ExpectConflictStrDto(settings=settings))
+    val expectConflictStrDto = rememberSaveable(settings.editor.conflictStartStr, settings.editor.conflictSplitStr, settings.editor.conflictEndStr) {
+        mutableStateOf(
+            ExpectConflictStrDto(
+                conflictStartStr = settings.editor.conflictStartStr,
+                conflictSplitStr = settings.editor.conflictSplitStr,
+                conflictEndStr = settings.editor.conflictEndStr
+            )
+        )
+    }
 
 
-    val nextSearchPos = mutableCustomStateOf(
-        keyTag = stateKeyTag,
-        keyName = "nextSearchPos",
-        initValue = SearchPos.NotFound
-    )
+    val nextSearchPos = rememberSaveable { mutableStateOf(SearchPos.NotFound) }
 
-    val lastFoundPos = mutableCustomStateOf(
-        keyTag = stateKeyTag,
-        keyName = "lastFoundPos",
-        initValue = SearchPos.NotFound
-    )
+    val lastFoundPos = rememberSaveable { mutableStateOf(SearchPos.NotFound) }
 
     val initSearchPos = {
         //把起始搜索位置设置为当前第一个可见行的第一列
@@ -373,6 +391,7 @@ fun TextEditor(
     }
     if(requestFromParent.value==PageRequest.goToLine) {
         PageRequest.clearStateThenDoAct(requestFromParent) {
+            goToLineValue.value = goToLineValue.value.let { it.copy(selection = TextRange(0, it.text.length)) }
             showGoToLineDialog.value=true
         }
     }
@@ -536,6 +555,8 @@ fun TextEditor(
     }
 
     if(showGoToLineDialog.value) {
+        val focusRequester = remember { FocusRequester() }
+
         val firstLine = "1"
         val lastLine = ""+textEditorState.fields.size
         val lineNumRange = "$firstLine-$lastLine"
@@ -549,15 +570,16 @@ fun TextEditor(
                     ,
                 ) {
 
-                    androidx.compose.material3.TextField(
+                    TextField(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(10.dp)
+                            .focusRequester(focusRequester)
                         ,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = {
                             showGoToLineDialog.value = false
-                            doGoToLine(goToLineValue.value)
+                            doGoToLine(goToLineValue.value.text)
                         }),
                         singleLine = true,
 
@@ -585,7 +607,7 @@ fun TextEditor(
                         ClickableText(
                             text = stringResource(R.string.first_line),
                             modifier = MyStyleKt.ClickableText.modifier.clickable {
-                                goToLineValue.value = firstLine
+                                goToLineValue.value = TextFieldValue(firstLine)
                             },
                             fontWeight = FontWeight.Light
                         )
@@ -595,7 +617,7 @@ fun TextEditor(
                         ClickableText(
                             text = stringResource(R.string.last_line),
                             modifier = MyStyleKt.ClickableText.modifier.clickable {
-                                goToLineValue.value = lastLine
+                                goToLineValue.value = TextFieldValue(lastLine)
                             },
                             fontWeight = FontWeight.Light
                         )
@@ -607,14 +629,16 @@ fun TextEditor(
 
 
             },
-            okBtnEnabled = goToLineValue.value.isNotBlank(),
+            okBtnEnabled = goToLineValue.value.text.isNotBlank(),
             okBtnText = stringResource(id = R.string.go),
             cancelBtnText = stringResource(id = R.string.cancel),
             onCancel = { showGoToLineDialog.value = false }
         ) {
             showGoToLineDialog.value = false
-            doGoToLine(goToLineValue.value)
+            doGoToLine(goToLineValue.value.text)
         }
+
+        LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
     }
 
 //    val scrollTo = { lineIndex:Int ->
@@ -1020,7 +1044,11 @@ fun TextEditor(
                 textEditorState.fields.forEachIndexed{ index, textFieldState ->
                     val curLineText = textFieldState.value.text
 
-                    val bgColor = if(mergeMode) {
+                    // patch开头的行（+ -）和merge开头的行（7个=号）并不冲突
+                    val patchColor = if(patchMode) PatchUtil.getColorOfLine(curLineText, inDarkTheme) else null;
+                    val bgColor = if(patchMode && patchColor != null) {
+                        patchColor
+                    } else if(mergeMode) {
                         UIHelper.getBackgroundColorForMergeConflictSplitText(
                             text = curLineText,
                             settings = settings,
@@ -1069,7 +1097,13 @@ fun TextEditor(
 
                         decorationBox(
                             index,
-                            textFieldState.isSelected
+                            textFieldState.isSelected,
+                            textFieldState,
+
+                            //用来判断是否选中当前行，若选中则加背景颜色，如果为null就当作-1，-1为无效索引，这样就不会选中任何行
+                            textEditorState.focusingLineIdx ?: -1,
+                            textEditorState.isMultipleSelectionMode,
+
                         ) { modifier ->
                             // FileEditor里的innerTextFiled()会执行这的代码
                             Box(
@@ -1100,7 +1134,7 @@ fun TextEditor(
                                         }
                                     }
                             ) {
-                                TextField(
+                                MyTextField(
                                     //搜索模式已经没必要聚焦了，因为不需要光标定位行了，直接高亮关键字了，而且搜索模式会把focusingLineIdx设为null以避免聚焦行弹出键盘误判内容已改变从而触发重组导致高亮关键字功能失效
 //                                    focusThisLine = if(textEditorState.isContentEdited.value) index == textEditorState.focusingLineIdx else false,
                                     //仅当搜索模式，或者内容发生变化（比如换行）时光标才会自动聚焦，否则不聚焦，这样是为了避免切换页面再回来自动弹出键盘
@@ -1116,9 +1150,10 @@ fun TextEditor(
                                     textFieldState = textFieldState,
                                     enabled = !textEditorState.isMultipleSelectionMode && !readOnlyMode,
                                     focusRequester = focusRequester,
-                                    fontSize = fontSize,
+                                    fontSize = fontSize.intValue,
+                                    fontColor = fontColor,
 //                                    bgColor = bgColor,
-                                    bgColor = Color.Unspecified,
+//                                    bgColor = Color.Unspecified,
                                     onUpdateText = { newText ->
 
                                         doJobThenOffLoading {
@@ -1170,7 +1205,7 @@ fun TextEditor(
 
                                         doJobThenOffLoading {
                                             try {
-                                                textEditorState.splitAtCursor(
+                                                textEditorState.splitNewLine(
                                                     targetIndex = index,
                                                     textFieldValue = newText
                                                 )
@@ -1348,7 +1383,8 @@ data class ScrollEvent(
     }
 }
 
-data class SearchPos(var lineIndex:Int=-1, var columnIndex:Int=-1) {
+@Parcelize
+data class SearchPos(var lineIndex:Int=-1, var columnIndex:Int=-1):Parcelable {
     companion object{
         val NotFound = SearchPos(-1, -1)
     }

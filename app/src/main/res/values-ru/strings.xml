@@ -1257,5 +1257,14 @@
     <!-- new at 20250420 -->
     <string name="link_all">Подключить Все</string>
 
+    <!-- new at 20250427 -->
+    <string name="append_a_line">Добавить строку</string>
+    <string name="restart_app">Перезапуск Приложения</string>
+
+
+    <!-- new at 20250501 -->
+    <string name="expand_all">Развернуть все</string>
+    <string name="collapse_all">Свернуть все</string>
+    <string name="patch_mode">Режим патча</string>
 
 </resources>

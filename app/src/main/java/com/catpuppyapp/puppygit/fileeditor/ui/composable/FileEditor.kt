@@ -1,6 +1,5 @@
 package com.catpuppyapp.puppygit.fileeditor.ui.composable
 
-import android.annotation.SuppressLint
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -15,11 +14,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
@@ -40,7 +41,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import com.catpuppyapp.puppygit.compose.BottomBar
 import com.catpuppyapp.puppygit.compose.ConfirmDialog
 import com.catpuppyapp.puppygit.compose.MarkDownContainer
+import com.catpuppyapp.puppygit.compose.PullToRefreshBox
 import com.catpuppyapp.puppygit.compose.SelectedItemDialog3
 import com.catpuppyapp.puppygit.compose.SwipeIcon
 import com.catpuppyapp.puppygit.constants.PageRequest
@@ -79,6 +80,7 @@ import com.catpuppyapp.puppygit.utils.EditCache
 import com.catpuppyapp.puppygit.utils.Msg
 import com.catpuppyapp.puppygit.utils.MyLog
 import com.catpuppyapp.puppygit.utils.UIHelper
+import com.catpuppyapp.puppygit.utils.cache.Cache
 import com.catpuppyapp.puppygit.utils.doJobThenOffLoading
 import com.catpuppyapp.puppygit.utils.replaceStringResList
 import com.catpuppyapp.puppygit.utils.state.CustomStateSaveable
@@ -87,17 +89,18 @@ import me.saket.swipe.SwipeAction
 import me.saket.swipe.SwipeableActionsBox
 
 private const val TAG = "FileEditor"
-private const val stateKeyTag = "FileEditor"
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FileEditor(
+    stateKeyTag:String,
     requireEditorScrollToPreviewCurPos:MutableState<Boolean>,
     requirePreviewScrollToEditorCurPos:MutableState<Boolean>,
     isSubPageMode:Boolean,
     previewNavBack:()->Unit,
     previewNavAhead:()->Unit,
     previewNavStack:CustomStateSaveable<EditorPreviewNavStack>,
+    refreshPreviewPage:()->Unit,
 
     previewLoading:Boolean,
     mdText:MutableState<String>,
@@ -125,11 +128,14 @@ fun FileEditor(
     searchMode:MutableState<Boolean>,
     searchKeyword:String,
     mergeMode:Boolean,
+    patchMode:Boolean,
     showLineNum:MutableState<Boolean>,
     lineNumFontSize:MutableIntState,
     fontSize:MutableIntState,
     undoStack: UndoStack
 ) {
+    val stateKeyTag = Cache.getComponentKey(stateKeyTag, TAG)
+
     val activityContext = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
@@ -291,6 +297,8 @@ fun FileEditor(
     )
 
 
+    val fontColor = remember(inDarkTheme) { UIHelper.getFontColor(inDarkTheme) }
+
     SwipeableActionsBox(
         startActions = listOf(leftToRightAct),
         endActions = listOf(rightToLeftAct),
@@ -299,27 +307,35 @@ fun FileEditor(
 
         Box(modifier = Modifier.fillMaxSize()) {
             if(isPreviewModeOn.value) {
-                Column(
-                    modifier = Modifier
-                        //fillMaxSize 必须在最上面！要不然，文字不会显示在中间！
-                        .fillMaxSize()
-                        .padding(contentPadding)
-                        .verticalScroll(curPreviewScrollState)
-                    ,
+                PullToRefreshBox(
+                    contentPadding = contentPadding,
+//                    isRefreshing = previewLoading, //有bug，得传state，不然加载后这图标会留在原地，但要改的话里面代码得改，其他很多地方也都得改，我懒得改，索性直接禁用，用其他东西loading
+                    onRefresh = { refreshPreviewPage() }
                 ) {
-                    Spacer(Modifier.height(topPadding))
+                    Column(
+                        modifier = Modifier
+                            //fillMaxSize 必须在最上面！要不然，文字不会显示在中间！
+                            .fillMaxSize()
+                            .padding(contentPadding)
+                            .verticalScroll(curPreviewScrollState)
+                        ,
+                    ) {
+                        Spacer(Modifier.height(topPadding))
 
-                    MarkDownContainer(
-                        modifier = Modifier.padding(horizontal = 10.dp),
-                        content = mdText.value,
-                        basePathNoEndSlash = basePath.value,
-                        fontSize = fontSize.intValue, //和编辑器字体大小保持一致
-                        onLinkClicked = { link ->
-                            previewLinkHandler(link)
-                        }
-                    )
+                        MarkDownContainer(
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                            content = mdText.value,
+                            basePathNoEndSlash = basePath.value,
+                            fontSize = fontSize.intValue, //和编辑器字体大小保持一致
+                            fontColor = fontColor,
+                            onLinkClicked = { link ->
+                                previewLinkHandler(link)
+                            }
+                        )
 
-                    Spacer(Modifier.height(30.dp))
+                        Spacer(Modifier.height(30.dp))
+                    }
+
                 }
 
                 LaunchedEffect(Unit) {
@@ -346,7 +362,11 @@ fun FileEditor(
                 }
             } else {
 
+                val bottomLineWidth = remember { 1.dp }
+                val changeTypeWidth = remember { 10.dp }
+
                 TextEditor(
+                    stateKeyTag = stateKeyTag,
                     undoStack = undoStack,
                     curPreviewScrollState = curPreviewScrollState,
                     requireEditorScrollToPreviewCurPos = requireEditorScrollToPreviewCurPos,
@@ -364,85 +384,106 @@ fun FileEditor(
                     searchMode = searchMode,
                     searchKeyword =searchKeyword,
                     mergeMode=mergeMode,
+                    patchMode=patchMode,
                     fontSize=fontSize,
-                ) { index, isSelected, innerTextField ->
+                    fontColor = fontColor,
+                ) { index, isSelected, currentField, focusingIdx, isMultiSelectionMode, innerTextField ->
                     // TextLine
                     Row(
 //                horizontalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier
+                            //底线
+                            .fieldBorder(
+                                bottomLineWidth = bottomLineWidth,
+                                color = UIHelper.getDividerColor(),
+                                changeTypeLineWidth = changeTypeWidth,
+                                changeTypeColor = currentField.getColorOfChangeType(inDarkTheme),
+                            )
                             .fillMaxWidth()
                             .background(
                                 getBackgroundColor(
-                                    isSelected,
-                                    textEditorState.value.isMultipleSelectionMode
+                                    isSelected = isSelected,
+                                    isMultiSelectionMode = isMultiSelectionMode,
+                                    currentIdx = index,
+                                    focusingIdx = focusingIdx,
+                                    inDarkTheme = inDarkTheme,
+
                                 )
                             )
-                            .padding(start = (if (showLineNum.value) 2.dp else 5.dp), end = 5.dp)
+                            .padding(end = 5.dp)
                             .then(
                                 //给第一行top加点padding，不然离上面太近，难受
                                 if(index == 0) Modifier.padding(top = topPadding) else Modifier
                             )
-                            .bottomBorder(
-                                strokeWidth = 1.dp,
-                                color = if (inDarkTheme) Color.DarkGray.copy(alpha = 0.2f) else Color.LightGray.copy(alpha = 0.2f)
-                            )
                     ) {
-                        if(showLineNum.value) {
-                            Box (
-                                //让行号和选择图标居中
+
+                        Row(
+                            modifier = Modifier.combinedClickable(
+                                onLongClick = {
+                                    if (textEditorState.value.isMultipleSelectionMode) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+
+                                        doJobThenOffLoading {
+                                            textEditorState.value.selectFieldSpan(targetIndex = index)
+                                        }
+                                    }
+                                }
+                            ) {
+                                //如果是行选择模式，选中当前点击的行如果不是行选择模式；进入行选择模式
+                                if (textEditorState.value.isMultipleSelectionMode) {
+                                    //选中/取消选中 当前点击的行
+                                    doJobThenOffLoading {
+                                        textEditorState.value.selectField(targetIndex = index)
+                                    }
+
+                                } else { // 非行选择模式，启动行选择模式 (multiple selection mode on)
+                                    enableSelectMode(index)
+                                }
+                            }
+                        ) {
+                            //充当行号修改类型指示器和行号之间的padding，不然会重叠
+                            Text("", modifier = Modifier.width(if(showLineNum.value) changeTypeWidth-3.dp else changeTypeWidth))
+
+
+                            //行号
+                            if(showLineNum.value) {
+                                Box (
+                                    //让行号和选择图标居中
 //                    horizontalAlignment = Alignment.CenterHorizontally
-                            ){
-                                // TextLine Number
-                                Text(
-                                    modifier = Modifier.align(Alignment.TopCenter),
-                                    text = getLineNumber(index),
-                                    color = if(inDarkTheme) MyStyleKt.TextColor.lineNum_forEditorInDarkTheme else MyStyleKt.TextColor.lineNum_forEditorInLightTheme,
-                                    fontSize = lineNumFontSize.intValue.sp,
-                                    fontFamily = FontFamily.Monospace,  //等宽字体，和diff页面的行号保持一致
-                                    //行号居中
-                                    // modifier = Modifier.align(Alignment.CenterVertically)
-                                )
+                                ){
+                                    // TextLine Number
+                                    Text(
+                                        modifier = Modifier.align(Alignment.TopCenter),
+                                        text = getLineNumber(index),
+                                        color = if(inDarkTheme) MyStyleKt.TextColor.lineNum_forEditorInDarkTheme else MyStyleKt.TextColor.lineNum_forEditorInLightTheme,
+                                        fontSize = lineNumFontSize.intValue.sp,
+                                        fontFamily = FontFamily.Monospace,  //等宽字体，和diff页面的行号保持一致
+                                        //行号居中
+                                        // modifier = Modifier.align(Alignment.CenterVertically)
+                                    )
 
-                                // TextField Menu Icon
-                                FieldIcon(
+                                    // TextField Menu Icon
+                                    FieldIcon(
 //                                    isMultipleSelection = textEditorState.value.isMultipleSelectionMode,
-                                    focused = index == textEditorState.value.focusingLineIdx,
+                                        focused = index == textEditorState.value.focusingLineIdx,
 
-                                    //是否聚焦本行（三道横线图标）禁用了，不管了，维护这个状态太烦
+                                        //是否聚焦本行（三道横线图标）禁用了，不管了，维护这个状态太烦
 //                                    focused = false,
 
-                                    modifier = Modifier
-                                        .size(12.dp)
-                                        .padding(top = 1.dp)
-                                        .align(Alignment.BottomCenter)
-                                        .focusable(false)  //这不是我加的，是compose text editor原作者加的，不知道这个focusable(false)有什么用，是想让这个图标在用键盘导航时不聚焦吗？但实际还是能聚焦啊，所以可能和这个无关，那这个到底什么作用？
-                                        .combinedClickable(
-                                            onLongClick = {
-                                                if (textEditorState.value.isMultipleSelectionMode) {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        modifier = Modifier
+                                            .size(12.dp)
+                                            .padding(top = 1.dp)
+                                            .align(Alignment.BottomCenter)
+                                            .focusable(false)  //这个focusable不是我加的，是compose text editor原作者加的，不知道这个focusable(false)有什么用，是想让这个图标在用键盘导航时不聚焦吗？但实际还是能聚焦啊，所以可能和这个无关，那这个到底什么作用？
 
-                                                    doJobThenOffLoading {
-                                                        textEditorState.value.selectFieldSpan(targetIndex = index)
-                                                    }
-                                                }
-                                            }
-                                        ) {
-                                            //如果是行选择模式，选中当前点击的行如果不是行选择模式；进入行选择模式
-                                            if (textEditorState.value.isMultipleSelectionMode) {
-                                                //选中/取消选中 当前点击的行
-                                                doJobThenOffLoading {
-                                                    textEditorState.value.selectField(targetIndex = index)
-                                                }
 
-                                            } else { // 非行选择模式，启动行选择模式 (multiple selection mode on)
-                                                enableSelectMode(index)
-                                            }
-                                        }
+                                    )
 
-                                )
-
+                                }
                             }
                         }
+
+
 
                         // TextField
                         innerTextField(
@@ -478,6 +519,7 @@ fun FileEditor(
                     val iconList = listOf(
                         Icons.Filled.CleaningServices,  // clear line content
                         Icons.Filled.ContentPaste,
+                        Icons.AutoMirrored.Filled.KeyboardReturn,  // append a line
                         Icons.Filled.Delete,
                         Icons.Filled.ContentCut,
                         Icons.Filled.ContentCopy,
@@ -486,6 +528,7 @@ fun FileEditor(
                     val iconTextList = listOf(
                         stringResource(R.string.clear),
                         stringResource(R.string.paste),
+                        stringResource(R.string.append_a_line),
                         stringResource(R.string.delete),
                         stringResource(R.string.cut),
                         stringResource(R.string.copy),
@@ -524,6 +567,18 @@ fun FileEditor(
 
                             doJobThenOffLoading {
                                 textEditorState.value.appendTextToLastSelectedLine(text)
+                            }
+
+                            Unit
+                        },
+                        onAppendALine@{
+                            if (readOnlyMode) {
+                                Msg.requireShow(activityContext.getString(R.string.readonly_cant_edit))
+                                return@onAppendALine
+                            }
+
+                            doJobThenOffLoading {
+                                textEditorState.value.appendTextToLastSelectedLine("", forceAppend = true)
                             }
 
                             Unit
@@ -580,6 +635,7 @@ fun FileEditor(
                     val iconEnableList = listOf(
                         onClear@{ hasLineSelectedAndNotReadOnly },  // clear
                         onPaste@{ hasLineSelectedAndNotReadOnly && clipboardManager.hasText() },  // paste，必须 "剪贴板非空 且 选中某行" 才启用
+                        onAppendALine@{ hasLineSelectedAndNotReadOnly },  // append a line
                         onDelete@{ hasLineSelectedAndNotReadOnly },  // delete
                         onCut@{ hasLineSelectedAndNotReadOnly },  // cut
                         onCopy@{ hasLineSelected },  // copy
@@ -637,34 +693,55 @@ private fun getLineNumber(index: Int): String {
 }
 
 @Composable
-private fun getBackgroundColor(isSelected: Boolean, isMultiSelectionMode:Boolean): Color {
+private fun getBackgroundColor(isSelected: Boolean, isMultiSelectionMode:Boolean, currentIdx:Int, focusingIdx:Int, inDarkTheme:Boolean, ): Color {
 //    return if (isSelected) Color(0x806456A5) else Color.White
 //    return if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Unspecified
     return if (isMultiSelectionMode  &&  isSelected) {
         MaterialTheme.colorScheme.primaryContainer
+    }else if(isMultiSelectionMode.not() && currentIdx == focusingIdx) {
+        //选中行颜色
+        if(inDarkTheme) Color(0x4D737373) else Color(0x7AD2D2D2)
     } else {
         Color.Unspecified
     }
 //    return Color.Unspecified
 }
 
-@SuppressLint("ModifierFactoryUnreferencedReceiver")
-private fun Modifier.bottomBorder(strokeWidth: Dp, color: Color) = composed(
-    factory = {
-        val density = LocalDensity.current
-        val strokeWidthPx = density.run { strokeWidth.toPx() }
+@Composable
+private fun Modifier.fieldBorder(
+    bottomLineWidth: Dp,
+    color: Color,
+    changeTypeLineWidth:Dp,
+    changeTypeColor: Color,
+) :Modifier {
+    val density = LocalDensity.current
+    val bottomLineWidthPx = with(density) { bottomLineWidth.toPx() }
+    val isRtl = UIHelper.isRtlLayout()
 
-        Modifier.drawBehind {
-            val width = size.width
-            val height = size.height - strokeWidthPx / 2
+    return drawBehind {
+        val width = size.width
+        val height = size.height
+        val bottomLineHeight = height - bottomLineWidthPx / 2
 
-            drawLine(
-                color = color,
-                start = Offset(x = 0f, y = height),
-                end = Offset(x = width, y = height),
-                strokeWidth = strokeWidthPx
-            )
-        }
+        // 底线
+        drawLine(
+            color = color,
+            start = Offset(x = 0f, y = bottomLineHeight),
+            end = Offset(x = width, y = bottomLineHeight),
+            strokeWidth = bottomLineWidthPx
+        )
+
+
+        // 每行左边的修改类型指示器，显示当前行是新增的还是修改的
+        val startX = if (isRtl) width else 0f
+
+        drawLine(
+            color = changeTypeColor,
+            strokeWidth = changeTypeLineWidth.toPx(),  //宽度
+            //起始和结束点，单位应该是px
+            start = Offset(startX, 0f),
+            end = Offset(startX, height),
+        )
     }
-)
+}
 

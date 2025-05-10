@@ -78,7 +78,7 @@ fun EditorTitle(
 
         Column(
             //双击标题回到文件顶部；长按可跳转到指定行；点击显示路径
-            modifier = Modifier.widthIn(min=MyStyleKt.Title.clickableTitleMinWidth)
+            modifier = Modifier
                 .combinedClickable(
                     //打开文件没出错 或 预览模式则启用，预览模式不管打开出没出错，都尝试显示弹窗，不过如果文件无法打开，
 //                    enabled = !editorOpenFileErr || isPreviewModeOn,
@@ -106,7 +106,7 @@ fun EditorTitle(
                     editorPageRequestFromParent.value = PageRequest.showDetails
                     //点按显示文件名
     //                showToast(AppModel.appContext, fileName)
-                }
+                }.widthIn(min=MyStyleKt.Title.clickableTitleMinWidth)
         ) {
             if(editorSearchMode) {
                     FilterTextField(filterKeyWord = editorSearchKeyword)
@@ -118,12 +118,12 @@ fun EditorTitle(
                         Icon(
                             modifier = Modifier.size(12.dp).padding(end = 1.dp),
                             imageVector = if(isPreviewModeOn) Icons.Filled.RemoveRedEye else Icons.Filled.Lock,
-                            contentDescription = null,
+                            contentDescription = stringResource(R.string.read_only),
                         )
                     }
 
                     Text(text =fileName,
-                        fontSize = 15.sp,
+                        fontSize = MyStyleKt.Title.firstLineFontSizeSmall,
                         maxLines=1,
                         overflow = TextOverflow.Ellipsis,
                         color = if(editorPageMergeMode) MyStyleKt.TextColor.danger() else Color.Unspecified

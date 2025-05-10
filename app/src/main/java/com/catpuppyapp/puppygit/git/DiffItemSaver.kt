@@ -10,6 +10,7 @@ import java.util.EnumSet
 import java.util.TreeMap
 
 data class DiffItemSaver (
+    var relativePathUnderRepo:String="",  //仓库下相对路径
     var keyForRefresh:String= getShortUUID(),
     var from:String= Cons.gitDiffFromIndexToWorktree,
 //    var fileHeader:String="";  // file好像没有header
@@ -25,7 +26,22 @@ data class DiffItemSaver (
 
     //指示文件是否修改过，因为有时候会错误的diff没修改过的文件，所以需要判断下
     var isFileModified:Boolean=false,
+    var addedLines:Int=0,  //添加了多少行。（不包含EOF，因为那个东西判断不太准，有时候明明删了却显示添加，让人困惑，而且一个空行感觉好像意义不大？）
+    var deletedLines:Int=0,  //删除了多少行
+    var allLines:Int=0,  //总共多少行，包含添加、删除、上下文，如果有eof，也包含eof
+
+
+
+    // 比较的左右两边的文件的类型，如果是图片，则按图片预览，若都是text，则按text预览
+    var oldFileType: DiffItemSaverType = DiffItemSaverType.TEXT,
+    var newFileType: DiffItemSaverType = DiffItemSaverType.TEXT,
+
+    // 把blob文件存到本地的path，一般存到缓存目录供临时查看，预览图片时会用到
+    var oldBlobSavePath:String="",
+    var newBlobSavePath:String="",
 ){
+
+
 
     //获取实际生效的文件大小
     //ps:如果想判断文件大小有无超过限制，用此方法返回值作为 isFileSizeOverLimit() 的入参做判断即可
@@ -155,6 +171,12 @@ class PuppyHunk {
      * 参见 `hunk_header_format.md`
      */
     var header:String=""
+
+    private var cachedHeader:String? = null
+
+    //若不trimEnd()，末尾有空行，影响排版，感觉像多了padding，不好看
+    fun cachedNoLineBreakHeader() = (cachedHeader ?: header.trimEnd().let { cachedHeader = it; it });
+
 }
 
 data class PuppyLine (
@@ -250,4 +272,9 @@ data class PuppyLine (
     }
 
 
+}
+
+enum class DiffItemSaverType {
+    TEXT,
+    IMG,
 }

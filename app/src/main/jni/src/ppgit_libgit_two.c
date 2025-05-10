@@ -80,8 +80,7 @@ static void throwException(JNIEnv *env, jclass exceptionClass, jmethodID constru
 static jclass getLibgitTwoExceptionClass(JNIEnv *env) {
     static jclass exceptionClass = NULL;
     if (!exceptionClass) {
-        exceptionClass = findClass(env,
-                                   "com/catpuppyapp/puppygit/jni/LibGitTwoException");
+        exceptionClass = findClass(env, J_CLZ_PREFIX "LibGitTwoException");
     }
     return exceptionClass;
 }
@@ -320,12 +319,18 @@ void bytesToHexString(const unsigned char *bytes, size_t length, char *hexString
     hexString[length * 2] = '\0'; // 确保字符串以 null 结尾
 }
 
+jclass sshCertClassCache = NULL;
+
 /**
  * see: https://libgit2.org/libgit2/#v1.7.2/type/git_cert_hostkey
  */
 jobject createSshCert(git_cert_hostkey *certHostKey, jstring hostname, JNIEnv *env) {
     // 获取 SshCert 类
-    jclass sshCertClass = (*env)->FindClass(env, J_CLZ_PREFIX "SshCert");
+    jclass sshCertClass = sshCertClassCache;
+    if(sshCertClass == NULL) {
+        sshCertClassCache = findClass(env, J_CLZ_PREFIX "SshCert");
+        sshCertClass = sshCertClassCache;
+    }
 
     // 获取构造函数
     jmethodID constructor = (*env)->GetMethodID(env, sshCertClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
@@ -387,3 +392,273 @@ JNIEXPORT jobject JNICALL J_MAKE_METHOD(LibgitTwo_jniGetDataOfSshCert)(JNIEnv *e
     }
 
 }
+
+
+JNIEXPORT jint JNICALL J_MAKE_METHOD(LibgitTwo_jniSaveBlobToPath)(JNIEnv *env, jclass callerJavaClass, jlong blobPtr, jstring savePath)
+{
+    git_blob* blob = (git_blob *)blobPtr;
+
+    // 字节流
+    //这blob data不用释放文档说的：“this pointer is owned internally by the object and shall not be free'd” ,
+    // 参见：https://libgit2.org/docs/reference/main/blob/git_blob_rawcontent.html
+    const char* blob_data = git_blob_rawcontent(blob);
+    size_t blob_size = git_blob_rawsize(blob);
+
+    //转换路径为c字符串
+    char* c_savePath = j_copy_of_jstring(env, savePath, true);
+    if(c_savePath == NULL) {
+        free(c_savePath);
+        return -1;
+    }
+
+    //写入文件
+    FILE *output_file = fopen(c_savePath, "wb");
+    fwrite(blob_data, 1, blob_size, output_file);
+
+
+    // clean up
+    fclose(output_file);
+    free(c_savePath);
+
+    return 0;
+}
+
+JNIEXPORT jlongArray JNICALL J_MAKE_METHOD(LibgitTwo_jniGetStatusEntryRawPointers)(JNIEnv *env, jclass obj, jlong statusListPtr) {
+    git_status_list* listPtr = (git_status_list *)statusListPtr;
+    size_t length = git_status_list_entrycount(listPtr);
+
+    // create jlongArray
+    jlongArray resultArray = (*env)->NewLongArray(env, length);
+    if (resultArray == NULL) {
+        return NULL; // mem assign failed
+    }
+
+    jsize jlongSize = sizeof(jlong);
+
+    for(int i=0; i < length; i++) {
+        (*env)->SetLongArrayRegion(env, resultArray, i, jlongSize, git_status_byindex(listPtr, i));
+    }
+
+    // 返回数组
+    return resultArray;
+}
+
+
+
+jobject createStatusEntryDto(
+        JNIEnv *env,
+        jclass statusEntryDtoClass,
+        jfieldID indexToWorkDirOldFilePathField,
+        jfieldID indexToWorkDirNewFilePathField,
+        jfieldID headToIndexOldFilePathField,
+        jfieldID headToIndexNewFilePathField,
+
+        jfieldID indexToWorkDirOldFileSizeField,
+        jfieldID indexToWorkDirNewFileSizeField,
+        jfieldID headToIndexOldFileSizeField,
+        jfieldID headToIndexNewFileSizeField,
+
+        jfieldID entryStatusFlagField,
+
+        jstring indexToWorkDirOldFilePath,
+        jstring indexToWorkDirNewFilePath,
+        jstring headToIndexOldFilePath,
+        jstring headToIndexNewFilePath,
+
+        jlong indexToWorkDirOldFileSize,
+        jlong indexToWorkDirNewFileSize,
+        jlong headToIndexOldFileSize,
+        jlong headToIndexNewFileSize,
+
+        jint statusFlag
+) {
+    // 获取构造函数 ID
+    jmethodID constructor = (*env)->GetMethodID(env, statusEntryDtoClass, "<init>", "()V");
+    if (constructor == NULL) {
+        return NULL; // 构造函数未找到
+    }
+
+    // 创建 StatusEntryDto 对象
+    jobject statusEntryDtoObject = (*env)->NewObject(env, statusEntryDtoClass, constructor);
+    if (statusEntryDtoObject == NULL) {
+        return NULL; // 对象创建失败
+    }
+
+    // 设置字段值
+    (*env)->SetObjectField(env, statusEntryDtoObject, indexToWorkDirOldFilePathField, indexToWorkDirOldFilePath);
+    (*env)->SetObjectField(env, statusEntryDtoObject, indexToWorkDirNewFilePathField, indexToWorkDirNewFilePath);
+    (*env)->SetObjectField(env, statusEntryDtoObject, headToIndexOldFilePathField, headToIndexOldFilePath);
+    (*env)->SetObjectField(env, statusEntryDtoObject, headToIndexNewFilePathField, headToIndexNewFilePath);
+
+    (*env)->SetLongField(env, statusEntryDtoObject, indexToWorkDirOldFileSizeField, indexToWorkDirOldFileSize);
+    (*env)->SetLongField(env, statusEntryDtoObject, indexToWorkDirNewFileSizeField, indexToWorkDirNewFileSize);
+    (*env)->SetLongField(env, statusEntryDtoObject, headToIndexOldFileSizeField, headToIndexOldFileSize);
+    (*env)->SetLongField(env, statusEntryDtoObject, headToIndexNewFileSizeField, headToIndexNewFileSize);
+
+    (*env)->SetIntField(env, statusEntryDtoObject, entryStatusFlagField, statusFlag);
+
+    // 返回对象
+    return statusEntryDtoObject;
+}
+
+jclass statusEntryDtoClassCache = NULL;
+
+jfieldID indexToWorkDirOldFilePathFieldCache = NULL;
+jfieldID indexToWorkDirNewFilePathFieldCache = NULL;
+jfieldID headToIndexOldFilePathFieldCache = NULL;
+jfieldID headToIndexNewFilePathFieldCache = NULL;
+
+jfieldID indexToWorkDirOldFileSizeFieldCache = NULL;
+jfieldID indexToWorkDirNewFileSizeFieldCache = NULL;
+jfieldID headToIndexOldFileSizeFieldCache = NULL;
+jfieldID headToIndexNewFileSizeFieldCache = NULL;
+
+jfieldID entryStatusFlagFieldCache = NULL;
+
+JNIEXPORT jobjectArray JNICALL J_MAKE_METHOD(LibgitTwo_jniGetStatusEntries)(JNIEnv *env, jclass obj, jlong statusListPtr) {
+    git_status_list* listPtr = (git_status_list *)statusListPtr;
+    size_t length = git_status_list_entrycount(listPtr);
+
+    // 获取 StatusEntryDto 类的引用
+    jclass statusEntryDtoClass = statusEntryDtoClassCache;
+    if (!statusEntryDtoClass) {
+        statusEntryDtoClassCache = findClass(env, J_CLZ_PREFIX "StatusEntryDto");
+        statusEntryDtoClass = statusEntryDtoClassCache;
+    }
+
+    // 创建 StatusEntryDto 对象的数组
+    jobjectArray statusEntryDtoArray = (*env)->NewObjectArray(env, length, statusEntryDtoClass, NULL);
+    if (statusEntryDtoArray == NULL) {
+        return NULL; // 数组创建失败
+    }
+
+
+
+    // 获取字段 ID
+    jfieldID indexToWorkDirOldFilePathField = indexToWorkDirOldFilePathFieldCache;
+    if(!indexToWorkDirOldFilePathField) {
+        indexToWorkDirOldFilePathFieldCache = findField(env, statusEntryDtoClass, "indexToWorkDirOldFilePath", "Ljava/lang/String;");
+        indexToWorkDirOldFilePathField = indexToWorkDirOldFilePathFieldCache;
+    }
+
+    jfieldID indexToWorkDirNewFilePathField = indexToWorkDirNewFilePathFieldCache;
+    if(!indexToWorkDirNewFilePathField) {
+        indexToWorkDirNewFilePathFieldCache = findField(env, statusEntryDtoClass, "indexToWorkDirNewFilePath", "Ljava/lang/String;");
+        indexToWorkDirNewFilePathField = indexToWorkDirNewFilePathFieldCache;
+    }
+
+    jfieldID headToIndexOldFilePathField = headToIndexOldFilePathFieldCache;
+    if(!headToIndexOldFilePathField) {
+        headToIndexOldFilePathFieldCache = findField(env, statusEntryDtoClass, "headToIndexOldFilePath", "Ljava/lang/String;");
+        headToIndexOldFilePathField = headToIndexOldFilePathFieldCache;
+    }
+
+    jfieldID headToIndexNewFilePathField = headToIndexNewFilePathFieldCache;
+    if(!headToIndexNewFilePathField) {
+        headToIndexNewFilePathFieldCache = findField(env, statusEntryDtoClass, "headToIndexNewFilePath", "Ljava/lang/String;");
+        headToIndexNewFilePathField = headToIndexNewFilePathFieldCache;
+    }
+
+    jfieldID indexToWorkDirOldFileSizeField = indexToWorkDirOldFileSizeFieldCache;
+    if(!indexToWorkDirOldFileSizeField) {
+        indexToWorkDirOldFileSizeFieldCache = findField(env, statusEntryDtoClass, "indexToWorkDirOldFileSize", "J");
+        indexToWorkDirOldFileSizeField = indexToWorkDirOldFileSizeFieldCache;
+    }
+
+    jfieldID indexToWorkDirNewFileSizeField = indexToWorkDirNewFileSizeFieldCache;
+    if(!indexToWorkDirNewFileSizeField) {
+        indexToWorkDirNewFileSizeFieldCache = findField(env, statusEntryDtoClass, "indexToWorkDirNewFileSize", "J");
+        indexToWorkDirNewFileSizeField = indexToWorkDirNewFileSizeFieldCache;
+    }
+
+    jfieldID headToIndexOldFileSizeField = headToIndexOldFileSizeFieldCache;
+    if(!headToIndexOldFileSizeField) {
+        headToIndexOldFileSizeFieldCache = findField(env, statusEntryDtoClass, "headToIndexOldFileSize", "J");
+        headToIndexOldFileSizeField = headToIndexOldFileSizeFieldCache;
+    }
+
+    jfieldID headToIndexNewFileSizeField = headToIndexNewFileSizeFieldCache;
+    if(!headToIndexNewFileSizeField) {
+        headToIndexNewFileSizeFieldCache = findField(env, statusEntryDtoClass, "headToIndexNewFileSize", "J");
+        headToIndexNewFileSizeField = headToIndexNewFileSizeFieldCache;
+    }
+
+
+    jfieldID entryStatusFlagField = entryStatusFlagFieldCache;
+    if(!entryStatusFlagField) {
+        entryStatusFlagFieldCache = findField(env, statusEntryDtoClass, "entryStatusFlag", "I");
+        entryStatusFlagField = entryStatusFlagFieldCache;
+    }
+
+
+    //填充数组
+    for(int i=0; i < length; i++) {
+        git_status_entry* entry = git_status_byindex(listPtr, i);
+
+        // 如果光查 index to worktree，那head to index就是NULL，反之亦然
+        git_diff_delta * head2IndexDelta = entry->head_to_index;
+        git_diff_delta * index2WorkDirDelta = entry->index_to_workdir;
+
+        jstring index2WorkDirDeltaOldFilePath = NULL;
+        jstring index2WorkDirDeltaNewFilePath = NULL;
+        jlong index2WorkDirDeltaOldFileSize = 0;
+        jlong index2WorkDirDeltaNewFileSize = 0;
+        if(index2WorkDirDelta != NULL) {
+            index2WorkDirDeltaOldFilePath = (*env)->NewStringUTF(env, index2WorkDirDelta->old_file.path);
+            index2WorkDirDeltaNewFilePath = (*env)->NewStringUTF(env, index2WorkDirDelta->new_file.path);
+            index2WorkDirDeltaOldFileSize = index2WorkDirDelta->old_file.size;
+            index2WorkDirDeltaNewFileSize = index2WorkDirDelta->new_file.size;
+        }
+
+        jstring head2IndexDeltaOldFilePath = NULL;
+        jstring head2IndexDeltaNewFilePath = NULL;
+        jlong head2IndexDeltaOldFileSize = 0;
+        jlong head2IndexDeltaNewFileSize = 0;
+        if(head2IndexDelta != NULL) {
+            head2IndexDeltaOldFilePath = (*env)->NewStringUTF(env, head2IndexDelta->old_file.path);
+            head2IndexDeltaNewFilePath = (*env)->NewStringUTF(env, head2IndexDelta->new_file.path);
+            head2IndexDeltaOldFileSize = head2IndexDelta->old_file.size;
+            head2IndexDeltaNewFileSize = head2IndexDelta->new_file.size;
+        }
+
+
+        (*env)->SetObjectArrayElement(
+                env,
+                statusEntryDtoArray,
+                i,
+                createStatusEntryDto(
+                    env,
+                    statusEntryDtoClass,
+
+                    indexToWorkDirOldFilePathField,
+                    indexToWorkDirNewFilePathField,
+                    headToIndexOldFilePathField,
+                    headToIndexNewFilePathField,
+
+                    indexToWorkDirOldFileSizeField,
+                    indexToWorkDirNewFileSizeField,
+                    headToIndexOldFileSizeField,
+                    headToIndexNewFileSizeField,
+
+                    entryStatusFlagField,
+
+                    index2WorkDirDeltaOldFilePath,
+                    index2WorkDirDeltaNewFilePath,
+                    head2IndexDeltaOldFilePath,
+                    head2IndexDeltaNewFilePath,
+
+                    index2WorkDirDeltaOldFileSize,
+                    index2WorkDirDeltaNewFileSize,
+                    head2IndexDeltaOldFileSize,
+                    head2IndexDeltaNewFileSize,
+
+                    entry->status
+                )
+        );
+
+    }
+
+    // 返回数组
+    return statusEntryDtoArray;
+}
+
